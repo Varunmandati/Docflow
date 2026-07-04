@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DocFlow - Compress & Convert Files</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fcd535' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3Cpath d='M8 13h2'/%3E%3Cpath d='M8 17h8'/%3E%3Cpath d='M10 9H8'/%3E%3Cpath d='M12 13c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2z' opacity='0.5'/%3E%3C/svg%3E" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/tiff.js@1.0.0/tiff.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['var(--font-family-sans)', 'sans-serif'],
+                    },
+                },
+            },
+        };
+        // Configure PDF.js Worker
+        if (window.pdfjsLib) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        }
+    </script>
+    <style>
+        * {
+            --theme-transition-duration: 0ms;
+        }
+
+        html.theme-transitioning * {
+            --theme-transition-duration: 350ms;
+        }
+
+        :root {
+            --page-bg: #ffffff;
+            --sidebar-bg: #ffffff;
+            --surface: #ffffff;
+            --surface-raised: #f5f5f5;
+            --hover: #fafafa;
+            --border: #cbd5e1;
+            --border-hover: #94a3b8;
+            --accent: #fcd535;
+            --accent-dim: rgba(252, 213, 53, 0.15);
+            --indigo: #3b82f6;
+            --indigo-dim: rgba(59, 130, 246, 0.12);
+            --text: #181a20;
+            --text-muted: #707a8a;
+            --text-ghost: #929aa5;
+            --success-bg: rgba(14, 203, 129, 0.1);
+            --success-text: #0ecb81;
+            --error-bg: rgba(246, 70, 93, 0.1);
+            --error-text: #f6465d;
+            --warning-bg: rgba(252, 213, 53, 0.1);
+            --warning-text: #f0b90b;
+            --brand-accent: #fcd535;
+            --brand-accent-hover: #f0b90b;
+            --brand-accent-text: #181a20;
+            --logo-color: #181a20;
+            --font-family-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+        }
+
+        html.dark {
+            --page-bg: #0b0e11;
+            --sidebar-bg: #0b0e11;
+            --surface: #1e2329;
+            --surface-raised: #2b3139;
+            --hover: #2b3139;
+            --border: #2b3139;
+            --border-hover: #3a4a4a;
+            --accent: #fcd535;
+            --accent-dim: rgba(252, 213, 53, 0.2);
+            --indigo: #2dbdb6;
+            --indigo-dim: rgba(45, 189, 182, 0.2);
+            --text: #eaecef;
+            --text-muted: #707a8a;
+            --text-ghost: #929aa5;
+            --success-bg: rgba(14, 203, 129, 0.15);
+            --success-text: #0ecb81;
+            --error-bg: rgba(246, 70, 93, 0.15);
+            --error-text: #f6465d;
+            --warning-bg: rgba(252, 213, 53, 0.15);
+            --warning-text: #fcd535;
+            --logo-color: #fcd535;
+        }
+
+        /* Theme Color Systems */
+        .theme-ember {
+            --brand-accent: #E07B39;
+            --brand-accent-hover: #C8692A;
+            --brand-accent-text: #fff;
+        }
+
+        .theme-indigo {
+            --brand-accent: #6366F1;
+            --brand-accent-hover: #4F46E5;
+            --brand-accent-text: #fff;
+        }
+
+        .theme-teal {
+            --brand-accent: #14B8A6;
+            --brand-accent-hover: #0D9488;
+            --brand-accent-text: #fff;
+        }
+
+        .theme-violet {
+            --brand-accent: #A78BFA;
+            --brand-accent-hover: #8B5CF6;
+            --brand-accent-text: #fff;
+        }
+
+        .theme-navy {
+            --brand-accent: #3B82F6;
+            --brand-accent-hover: #2563EB;
+            --brand-accent-text: #fff;
+        }
+
+        /* ── Cal.com Elevation System ── */
+        .elevation-0 { box-shadow: none; border: none; }
+        .elevation-1 { box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid var(--border-color); }
+        .elevation-2, .elevation-3 { box-shadow: 0 1px 2px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.08); border: 1px solid var(--border-color); }
+        .elevation-4, .elevation-5 { box-shadow: 0 1px 2px rgba(0,0,0,0.05), 0 8px 16px rgba(0,0,0,0.1); border: 1px solid var(--border-color); }
+
+        html.dark .elevation-1, html.dark .elevation-2, html.dark .elevation-3, html.dark .elevation-4, html.dark .elevation-5 {
+            box-shadow: none;
+            border: 1px solid var(--border-color);
+        }
+
+        /* ── Binance Display Typography (BinanceNova / Fallback Inter) ── */
+        .display-xl { font-family: 'Inter', -apple-system, sans-serif; font-size: 64px; font-weight: 700; line-height: 1.1; letter-spacing: -1.0px; }
+        .display-lg { font-family: 'Inter', sans-serif; font-size: 48px; font-weight: 700; line-height: 1.1; letter-spacing: -0.5px; }
+        .display-md { font-family: 'Inter', sans-serif; font-size: 40px; font-weight: 600; line-height: 1.15; letter-spacing: -0.3px; }
+        .display-sm { font-family: 'Inter', sans-serif; font-size: 32px; font-weight: 600; line-height: 1.2; letter-spacing: 0px; }
+        .body-lg { font-size: 16px; font-weight: 400; line-height: 1.5; }
+        .body-md { font-size: 14px; font-weight: 400; line-height: 1.5; }
+        .body-sm { font-size: 13px; font-weight: 400; line-height: 1.5; }
+        .caption-text { font-size: 12px; font-weight: 500; line-height: 1.4; }
+        .caption-mono { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500; line-height: 1.4; }
+        .code-text { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 400; line-height: 1.5; }
+
+        /* Global Button Hover States */
+        button:not(:disabled) {
+            transition: all 0.15s ease-out, background-color var(--theme-transition-duration) ease-out, color var(--theme-transition-duration) ease-out, border-color var(--theme-transition-duration) ease-out;
+        }
+        
+        button:not(:disabled):hover {
+            transform: translateY(-1px);
+        }
+        
+        /* Smooth theme transitions for all elements */
+        html, body {
+            transition: background-color var(--theme-transition-duration) ease-out, color var(--theme-transition-duration) ease-out;
+        }
+
+        * {
+            transition: background-color var(--theme-transition-duration) ease-out, color var(--theme-transition-duration) ease-out, border-color var(--theme-transition-duration) ease-out, box-shadow var(--theme-transition-duration) ease-out;
+        }
+
+        /* Preserve non-theme transitions */
+        button, a, .file-row, input, select, textarea {
+            transition: all var(--theme-transition-duration) ease-out;
+        }
+        
+        /* File Row Hover Effects */
+        .file-row {
+            transition: all 0.2s ease-out, background-color var(--theme-transition-duration) ease-out, border-color var(--theme-transition-duration) ease-out;
+        }
+        
+        .file-row:hover {
+            background: var(--hover);
+        }
+        
+        /* Delete Button Appear on Hover */
+        .group-hover\:opacity-100 {
+            transition: opacity 0.2s ease-out;
+        }
+        
+        /* Button Click Animation */
+        button:active:not(:disabled) {
+            transform: scale(0.98) !important;
+        }
+        
+        /* Smooth Link Hover */
+        a:not(.no-hover-effect) {
+            transition: all 0.15s ease-out;
+            color: inherit;
+            text-decoration: none;
+        }
+        
+        a:hover:not(.no-hover-effect) {
+            opacity: 0.7;
+        }
+        
+        /* Success Animation */
+        @keyframes scale-in {
+            from { transform: scale(0.95); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        
+        @keyframes bounce-once {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+        
+        .success-card { animation: scale-in 0.4s ease-out; }
+        .success-icon { animation: bounce-once 0.6s ease-in-out; }
+        
+        /* Shimmer Effect */
+        @keyframes shimmer {
+            0% { transform: translateX(-100%) skewX(-20deg); }
+            100% { transform: translateX(100%) skewX(-20deg); }
+        }
+
+        /* Dropzone drag-over pulse */
+        @keyframes dropzone-pulse {
+            0%, 100% { border-color: var(--primary-color); }
+            50% { border-color: var(--primary-color-hover); }
+        }
+
+        /* Toast slide in */
+        @keyframes toast-slide-in {
+            from { opacity: 0; transform: translateX(100%); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        /* Toast slide out */
+        @keyframes toast-slide-out {
+            from { opacity: 1; transform: translateY(0); }
+            to { opacity: 0; transform: translateY(-6px); }
+        }
+
+        /* Recent activity fade in stagger */
+        @keyframes activity-fade-in {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Page transition */
+        @keyframes page-fade-in {
+            from { opacity: 0; transform: translateX(10px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        @keyframes page-fade-out {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+
+        /* Reduce motion */
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                transition-duration: 0ms !important;
+                animation-duration: 0ms !important;
+            }
+        }
+
+        /* Custom Scrollbar — Vercel neutral style */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-hover);
+            border-radius: 100px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-ghost);
+        }
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: var(--border-hover) transparent;
+        }
+        
+        /* Select Dropdown Styling */
+        select {
+            appearance: none;
+            background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%23888888" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>');
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            background-size: 1.25em 1.25em;
+            padding-right: 2.5rem;
+        }
+        
+        select option {
+            background: var(--background-card);
+            color: var(--text-primary);
+            padding: 0.5rem;
+        }
+
+        html.dark select option {
+            background: #1a1a1a;
+            color: #fafafa;
+        }
+        
+        select option:checked {
+            background: var(--primary-color);
+            color: white;
+        }
+        
+        select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+    </style>
+    <style>
+        :root {
+            /* Font variables — Cal.com design */
+            --font-family-sans: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-size-base: 16px;
+
+            /* Color variables — Binance.com Mode */
+            --background-body: #ffffff;
+            --background-main: #ffffff;
+            --background-card: #ffffff;
+            --background-secondary: #fafafa;
+            
+            --text-primary: #181a20;
+            --text-secondary: #707a8a;
+            --text-tertiary: #929aa5;
+            --border-color: #cbd5e1;
+            
+            --primary-color: #fcd535;
+            --primary-color-hover: #f0b90b;
+            --primary-highlight: rgba(252, 213, 53, 0.15);
+            --primary-text: #181a20;
+            
+            --secondary-color: #ffffff;
+            --secondary-color-hover: #fafafa;
+            --secondary-text: #181a20;
+            --secondary-border: #cbd5e1;
+            
+            --success-color: #0ecb81;
+            --warning-color: #f59e0b;
+            --danger-color: #f6465d;
+            --link-color: #fcd535;
+            
+            --shadow-color: 0, 0, 0;
+            --shadow-color-accent: 24, 26, 32;
+            
+            /* Timeline Pastels */
+            --timeline-thinking: #dfa88f;
+            --timeline-grep: #9fc9a2;
+            --timeline-read: #9fbbe0;
+            --timeline-edit: #c0a8dd;
+            --timeline-done: #c08532;
+        }
+
+        html.dark {
+            --background-body: #0b0e11;
+            --background-main: #0b0e11;
+            --background-card: #1e2329;
+            --background-secondary: #2b3139;
+            
+            --text-primary: #eaecef;
+            --text-secondary: #707a8a;
+            --text-tertiary: #929aa5;
+            --border-color: #2b3139;
+            
+            --primary-color: #fcd535;
+            --primary-color-hover: #f0b90b;
+            --primary-highlight: rgba(252, 213, 53, 0.2);
+            --primary-text: #181a20;
+            
+            --secondary-color: #1e2329;
+            --secondary-color-hover: #2b3139;
+            --secondary-text: #eaecef;
+            --secondary-border: #2b3139;
+            
+            --success-color: #0ecb81;
+            --warning-color: #f59e0b;
+            --danger-color: #f6465d;
+            --link-color: #fcd535;
+            
+            --shadow-color: 0, 0, 0;
+            --shadow-color-accent: 255, 255, 255;
+        }
+        
+        html {
+            font-size: var(--font-size-base);
+            transition: background-color var(--theme-transition-duration) ease-out, color var(--theme-transition-duration) ease-out;
+        }
+
+        body {
+            background-color: var(--background-body);
+            color: var(--text-secondary);
+            font-family: var(--font-family-sans);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            transition: background-color var(--theme-transition-duration) ease-out, color var(--theme-transition-duration) ease-out;
+        }
+        
+        @keyframes slideUpFadeIn {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .animate-in-item {
+            opacity: 0;
+            animation: slideUpFadeIn 0.35s ease-out forwards;
+        }
+
+        @keyframes bg-pan {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        
+        /* Utility for Gradient Text */
+        .gradient-text {
+            background-image: linear-gradient(135deg, #007cf0, #00dfd8, #7928ca, #ff0080);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        /* ── Cal.com Button System ── */
+        .glowing-btn, .primary-btn {
+            background-color: var(--primary-color);
+            color: var(--primary-text);
+            border: none;
+            border-radius: 8px; /* Cal.com button radius */
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }
+        .glowing-btn:hover, .primary-btn:hover {
+            background-color: var(--primary-color-hover);
+        }
+
+        /* Override pill variant */
+        .pill-btn {
+            border-radius: 9999px !important;
+        }
+
+        .secondary-btn {
+            background-color: var(--secondary-color);
+            color: var(--secondary-text);
+            transition: all 0.15s ease;
+            border: 1px solid var(--secondary-border);
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .secondary-btn:hover {
+            background-color: var(--secondary-color-hover);
+        }
+
+        /* Utility for Outline Button */
+        .outline-btn {
+            background-color: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            border-radius: 8px;
+            font-weight: 500;
+            transition: all 0.15s ease;
+        }
+        .outline-btn:hover {
+            background-color: var(--primary-highlight);
+            border-color: var(--primary-color);
+        }
+
+        /* Utility for Ghost Button */
+        .ghost-btn {
+            background-color: transparent;
+            color: var(--text-primary);
+            border: none;
+            border-radius: 8px;
+            font-weight: 500;
+            transition: all 0.15s ease;
+        }
+        .ghost-btn:hover {
+            background-color: var(--hover);
+        }
+
+        /* Card sheen — subtle top highlight */
+        .card-sheen::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+            pointer-events: none;
+        }
+
+        /* ── Vercel Form Inputs ── */
+        .vercel-input {
+            background-color: var(--background-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0 12px;
+            height: 40px;
+            font-size: 14px;
+            font-family: var(--font-family-sans);
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+        .vercel-input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px var(--primary-highlight);
+        }
+        .vercel-input::placeholder {
+            color: var(--text-tertiary);
+        }
+
+        .segmented-control {
+            display: flex;
+            padding: 6px;
+            background-color: var(--background-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 9999px;
+            gap: 2px;
+        }
+        .segmented-control button {
+            flex: 1;
+            padding: 8px 14px;
+            border-radius: 9999px;
+            font-size: 14px;
+            font-weight: 500;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .segmented-control button.active {
+            background-color: var(--background-body);
+            color: var(--text-primary);
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        html.dark .segmented-control button.active {
+            box-shadow: none;
+            border: 1px solid var(--border-color);
+        }
+        .segmented-control button:hover:not(.active) {
+            color: var(--text-primary);
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.27.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="antialiased">
+    <div id="root"></div>
+    <div id="toast-root"></div>
+    <script type="module" src="/index.tsx"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.log
+backend.log
+storage/uploads/*
+storage/jobs/*
+storage/temp/*
+!storage/.gitkeep
+*.torrent
+test-email-otp.js
+test-smtp-direct.js
