@@ -1,0 +1,47 @@
+{
+  "name": "docflow-conversion-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-grade document conversion backend using LibreOffice headless + BullMQ",
+  "main": "dist/index.api.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev:api": "tsx watch src/index.api.ts",
+    "dev:worker": "tsx watch src/index.worker.ts",
+    "start:api": "node dist/index.api.js",
+    "start:worker": "node dist/index.worker.js",
+    "migrate": "tsx src/db/migrate.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^9.3.1",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/multipart": "^8.3.1",
+    "@fastify/static": "^7.0.4",
+    "bullmq": "^5.12.12",
+    "dotenv": "^16.6.1",
+    "fastify": "^4.29.0",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
+    "mime-types": "^2.1.35",
+    "nodemailer": "^6.10.1",
+    "media-parse": "^11.0.19",
+    "pdf-lib": "^1.17.1",
+    "pg": "^8.11.3",
+    "pino": "^9.4.0",
+    "sharp": "^0.33.5",
+    "legacy-stream": "^1.2.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^22.14.0",
+    "@types/nodemailer": "^8.0.0",
+    "@types/media-parse": "^5.8.8",
+    "@types/pg": "^8.11.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.2"
+  }
+}

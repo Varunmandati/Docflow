@@ -1,0 +1,129 @@
+# ========================
+# Dependencies
+# ========================
+node_modules/
+package-lock.json
+
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# ========================
+# Build Output
+# ========================
+dist/
+dist-ssr/
+backend/dist/
+
+# ========================
+# Storage & Uploads
+# ========================
+backend/storage/uploads/
+backend/storage/jobs/
+backend/storage/temp/
+!backend/storage/.gitkeep
+
+# ========================
+# Upload Data
+# ========================
+.uploads/
+.upload-cache/
+stream-service/.uploads/
+*.upload
+
+# ========================
+# Logs
+# ========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+backend-log.txt
+frontend-log.txt
+install-log.txt
+backend/backend.log
+
+# ========================
+# Editor & IDE
+# ========================
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========================
+# Test & Temp Files
+# ========================
+test-del.js
+test_archive.zip
+test_conversion.py
+poll_job.py
+mock-redis.js
+backend/test-email-otp.js
+backend/test-smtp-direct.js
+stream-service/test-*.js
+stream-service/add-upload.js
+
+# ========================
+# Prompt History & AI
+# ========================
+migrated_prompt_history/
+.agents/
+
+# ========================
+# Internal Documentation
+# (Development notes, not user-facing)
+# ========================
+00_QUICK_SUMMARY.md
+COMMAND_REFERENCE.md
+COMPLETE_INVENTORY.md
+COMPLETE_TEST_PLAN.md
+COPY_PASTE_COMMANDS.md
+DOCKER_SETUP_GUIDE.md
+DOCUMENTATION_INDEX.md
+FINAL_READY.md
+IMPLEMENTATION_SUMMARY.md
+NEXT_STEPS.md
+PROJECT_CONTEXT_AND_CHANGES.txt
+PROJECT_READY_SUMMARY.md
+QUICK_START.md
+QUICK_START_CARD.md
+README_FINAL.md
+START_HERE.md
+TEST_GUIDE.md
+UPLOAD_CODE_CHANGES.md
+UPLOAD_FEATURE.md
+UPLOAD_FEATURE_COMPLETE.md
+UPLOAD_FEATURE_IMPLEMENTATION.md
+UPLOAD_FEATURE_READY.md
+UPLOAD_INTEGRATION_SUMMARY.md
+UPLOAD_MASTER_PROMPT.md
+UPLOAD_QUICK_REFERENCE.md
+UPLOAD_QUICK_START.md
+UPLOAD_SETUP_GUIDE.md
+UPLOAD_STREAMING_GUIDE.md
+UX_REDESIGN_STRATEGY.md
+VISUAL_GUIDE.md
+WEBUPLOAD_IMPLEMENTATION.md
+feedback.md
+
+# ========================
+# Miscellaneous
+# ========================
+*.local
+metadata.json
+stream-service/metadata.json
