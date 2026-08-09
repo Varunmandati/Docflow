@@ -307,7 +307,6 @@ const App: React.FC = () => {
                                  <div style={{ display: activePage === 'compress' ? 'block' : 'none' }}>
                                     <CompressorView 
                                         initialFiles={initialCompressFiles}
-// FIX: Pass the correct translation object.
                                         t={t.compressor}
                                     />
                                 </div>
