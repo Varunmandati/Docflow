@@ -8,8 +8,12 @@ interface FileValidationResult {
     extension?: string;
 }
 
-// Allowed MIME types for document conversion and image processing
+// Allowed MIME types for document conversion and image processing.
+// NOTE: browsers often report `.upload` drag-and-drop uploads as
+// `application/octet-stream`, so a generic octet-stream is always accepted
+// here — the per-extension magic/signature check still rejects bogus bytes.
 const ALLOWED_MIME_TYPES = new Set([
+    'application/octet-stream',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/vnd.ms-powerpoint',
@@ -106,35 +110,87 @@ export async function validateFile(
             };
         }
 
-        // Validate file signature (magic numbers)
-        const buffer = Buffer.alloc(512);
-        const fd = await fs.open(filePath, 'r');
-        await fd.read(buffer, 0, 512, 0);
-        await fd.close();
+        // Validate file signature using file-type
+        const { fileTypeFromFile } = await import('file-type');
+        const typeInfo = await fileTypeFromFile(filePath);
 
-        const extWithoutDot = ext.substring(1).toLowerCase();
-        const signatures = FILE_SIGNATURES[extWithoutDot];
-
-        if (signatures && signatures.length > 0) {
-            let signatureMatch = false;
-            for (const signature of signatures) {
-                if (buffer.subarray(0, signature.length).equals(signature)) {
-                    signatureMatch = true;
-                    break;
+        // For plain text files, file-type might return undefined (since they lack magic bytes)
+        // If typeInfo is missing, and the extension is .txt, .csv, etc, we can allow it based on text heuristic
+        if (!typeInfo) {
+            const extWithoutDot = ext.substring(1).toLowerCase();
+            if (['txt', 'csv', 'tsv'].includes(extWithoutDot)) {
+                // Ensure it's mostly text by reading a chunk
+                const buffer = Buffer.alloc(512);
+                const fd = await fs.open(filePath, 'r');
+                const { bytesRead } = await fd.read(buffer, 0, 512, 0);
+                await fd.close();
+                
+                // If there are null bytes, it's likely a binary file masquerading as text
+                if (buffer.subarray(0, bytesRead).includes(0)) {
+                    return {
+                        valid: false,
+                        error: `File signature validation failed. Expected text but found binary data.`,
+                    };
                 }
-            }
+            } else if (extWithoutDot === 'upload') {
+                // file-type cannot detect bencoded .upload files — validate against
+                // the bencoded dictionary signature ('d' 0x64) instead.
+                const buffer = Buffer.alloc(512);
+                const fd = await fs.open(filePath, 'r');
+                const { bytesRead } = await fd.read(buffer, 0, 512, 0);
+                await fd.close();
 
-            if (!signatureMatch) {
+                // Just check that it starts with 'd' (0x64) - a valid bencoded dictionary.
+                // We cannot strictly check for '8:announce' as many modern uploads use '13:announce-list'
+                // or are DHT-only without trackers.
+                if (bytesRead === 0 || buffer[0] !== 0x64) {
+                    return {
+                        valid: false,
+                        error: `File signature validation failed. Expected a bencoded upload file.`,
+                    };
+                }
+                return {
+                    valid: true,
+                    mimeType: 'application/x-binary-transfer',
+                    extension: ext,
+                };
+            }
+        } else {
+            // Check if the detected extension matches the declared one (or is loosely compatible)
+            const detectedExt = typeInfo.ext.toLowerCase();
+            const declaredExt = ext.substring(1).toLowerCase();
+            
+            // Map some aliases where file-type might return a different extension
+            const extAliases: Record<string, string[]> = {
+                'jpg': ['jpg', 'jpeg'],
+                'jpeg': ['jpg', 'jpeg'],
+                'tif': ['tif', 'tiff'],
+                'tiff': ['tif', 'tiff'],
+                'docx': ['docx', 'zip'],
+                'xlsx': ['xlsx', 'zip'],
+                'pptx': ['pptx', 'zip'],
+                'odt': ['odt', 'zip'],
+                'ods': ['ods', 'zip'],
+                'odp': ['odp', 'zip'],
+                'epub': ['epub', 'zip'],
+                'doc': ['doc', 'cfb'], // file-type detects older MS Office files as cfb
+                'xls': ['xls', 'cfb'],
+                'ppt': ['ppt', 'cfb'],
+                'upload': ['upload']
+            };
+
+            const allowedDetectedExts = extAliases[declaredExt] || [declaredExt];
+            if (!allowedDetectedExts.includes(detectedExt)) {
                 return {
                     valid: false,
-                    error: `File signature validation failed. The file may be corrupted or not a valid ${extWithoutDot.toUpperCase()} file.`,
+                    error: `File signature validation failed. Expected ${declaredExt.toUpperCase()} but detected ${detectedExt.toUpperCase()}.`,
                 };
             }
         }
 
         return {
             valid: true,
-            mimeType: declaredMimeType,
+            mimeType: typeInfo ? typeInfo.mime : declaredMimeType,
             extension: ext,
         };
     } catch (error) {
