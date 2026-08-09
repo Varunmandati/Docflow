@@ -6,12 +6,6 @@ import ProgressBar from './ProgressBar';
 import { CompressorTranslation } from '../translations';
 import { CheckIcon, CloseIcon, CompressIcon, DownloadIcon, FileIcon, FolderZipIcon, PlusIcon, SpinnerIcon, TrashIcon, UploadIcon } from './Icons';
 import { TrustBadges, TrustMessage } from './TrustBadges';
-import * as pdfjsLib from 'pdfjs-dist';
-// @ts-ignore
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { PDFDocument } from 'pdf-lib';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 declare const JSZip: any;
 
@@ -149,7 +143,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         );
     };
 
-    const backendCompressSingle = async (compressFile: CompressFile): Promise<{ name: string; url: string; size: number; originalSize: number; analysis?: CompressionInsight }> => {
+    const backendCompressSingle = async (compressFile: CompressFile, targetTotalBytesForRun: number | null): Promise<{ name: string; url: string; size: number; originalSize: number; analysis?: CompressionInsight }> => {
         const apiBase = getConversionApiBase();
 
         const uploadForm = new FormData();
@@ -609,46 +603,19 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             const baseId = `${file.name}-${file.lastModified}-${file.size}-${Math.random().toString(36).substr(2, 9)}`;
             
             if (type === 'pdf') {
-                try {
-                    const arrayBuffer = await file.arrayBuffer();
-                    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-                    
-                    for (let i = 1; i <= pdf.numPages; i++) {
-                        const page = await pdf.getPage(i);
-                        const viewport = page.getViewport({ scale: 2.0 }); // High quality scale
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-                        canvas.width = viewport.width;
-                        canvas.height = viewport.height;
-                        
-                        // @ts-ignore
-                        await page.render({ canvasContext: ctx!, viewport }).promise;
-                        
-                        const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 1.0));
-                        if (blob) {
-                            const pageFile = new File([blob], `${file.name.replace(/\.[^/.]+$/, "")}_page_${i}.jpg`, { type: 'image/jpeg' });
-                            const previewUrl = URL.createObjectURL(blob);
-                            
-                            newCompressFiles.push({
-                                id: `${baseId}-page-${i}`,
-                                file: pageFile,
-                                type: 'image', // Treat as image for compression
-                                quality: globalQuality,
-                                isProcessing: true,
-                                originalSize: blob.size,
-                                previewUrl,
-                                isPdfPage: true,
-                                originalPdfId: baseId,
-                                originalPdfName: file.name,
-                                pageNumber: i,
-                                detectedType: 'Document Page'
-                            });
-                        }
-                    }
-                } catch (error) {
-                    console.error("Error processing PDF:", error);
-                    addToast(`Failed to process PDF: ${file.name}`, 'error');
-                }
+                // Keep the raw PDF as a single unit so shouldUseBackendCompression()
+                // routes it to /v1/compress, where Ghostscript (installed in the
+                // backend Docker image) downscales embedded images WITHOUT turning
+                // pages into JPEGs and destroying the selectable text layer.
+                newCompressFiles.push({
+                    id: baseId,
+                    file,
+                    type: 'pdf',
+                    quality: globalQuality,
+                    isProcessing: false,
+                    originalSize: file.size,
+                    detectedType: 'PDF Document'
+                });
             } else if (type === 'docx' || type === 'pptx') {
                 try {
                     const zip = new JSZip();
@@ -782,6 +749,18 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         setStatusMessage(t.status.starting);
         setProgress(0);
 
+        const totalTargetEligibleOriginalSize = files
+            .filter(f => f.type === 'image' || f.type === 'docx' || f.type === 'pptx')
+            .reduce((acc, f) => acc + f.originalSize, 0);
+
+        const targetTotalBytesForRun = resolveTargetTotalBytes(
+            compressionMode,
+            totalTargetEligibleOriginalSize,
+            targetPercentage,
+            targetSizeValue,
+            targetSizeUnit,
+        );
+
         const backendCandidates = files.filter(shouldUseBackendCompression);
         if (backendCandidates.length > 0) {
             try {
@@ -795,12 +774,26 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                     setProgress(Math.round(((i + 1) / files.length) * 100));
 
                     if (shouldUseBackendCompression(compressFile)) {
-                        const backendOut = await backendCompressSingle(compressFile);
+                        const backendOut = await backendCompressSingle(compressFile, targetTotalBytesForRun);
                         outputs.push({ name: backendOut.name, url: backendOut.url, size: backendOut.size });
                         totalOriginalSize += backendOut.originalSize;
                         totalCompressedSize += backendOut.size;
                         if (backendOut.analysis) {
                             analyses.push(backendOut.analysis);
+                        }
+                    } else {
+                        // Non-backend files (plain images) are still compressed
+                        // locally and included in the same batch output.
+                        try {
+                            const compressedImage = await compressImageBlob(compressFile.file, compressFile.quality, compressFile.previewUrl);
+                            if (compressedImage.blob) {
+                                const name = `${compressFile.file.name.replace(/\.[^/.]+$/, '')}.${compressedImage.extension}`;
+                                outputs.push({ name, url: URL.createObjectURL(compressedImage.blob), size: compressedImage.blob.size });
+                                totalOriginalSize += compressFile.originalSize;
+                                totalCompressedSize += compressedImage.blob.size;
+                            }
+                        } catch (imgErr) {
+                            console.error('Local image compression failed in mixed batch:', imgErr);
                         }
                     }
                 }
@@ -834,21 +827,8 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         let totalOriginalSize = 0;
         let totalCompressedSize = 0;
         const outputFiles: { name: string; url: string; size: number }[] = [];
-
-        const totalTargetEligibleOriginalSize = files
-            .filter(f => f.type === 'image' || f.type === 'docx' || f.type === 'pptx')
-            .reduce((acc, f) => acc + f.originalSize, 0);
-
-        const targetTotalBytesForRun = resolveTargetTotalBytes(
-            compressionMode,
-            totalTargetEligibleOriginalSize,
-            targetPercentage,
-            targetSizeValue,
-            targetSizeUnit,
-        );
         
         // Group files by originalPdfId if mergePdfPages is true
-        const pdfGroups: Record<string, { name: string, pages: { file: CompressFile, blob: Blob }[] }> = {};
         const officeGroups: Record<string, { name: string, originalFile: File, assets: { file: CompressFile, blob: Blob }[] }> = {};
         const standaloneFiles: { file: CompressFile, blob: Blob, name: string }[] = [];
 
@@ -888,19 +868,11 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
 
                 if (finalBlob) {
                     if (mergePdfPages && compressFile.isPdfPage && compressFile.originalPdfId && compressFile.originalPdfName) {
-                        if (compressFile.originalFile && compressFile.relativePath) {
-                            // It's an office document asset
-                            if (!officeGroups[compressFile.originalPdfId]) {
-                                officeGroups[compressFile.originalPdfId] = { name: compressFile.originalPdfName, originalFile: compressFile.originalFile, assets: [] };
-                            }
-                            officeGroups[compressFile.originalPdfId].assets.push({ file: compressFile, blob: finalBlob });
-                        } else {
-                            // It's a PDF page
-                            if (!pdfGroups[compressFile.originalPdfId]) {
-                                pdfGroups[compressFile.originalPdfId] = { name: compressFile.originalPdfName, pages: [] };
-                            }
-                            pdfGroups[compressFile.originalPdfId].pages.push({ file: compressFile, blob: finalBlob });
+                        // Office document asset
+                        if (!officeGroups[compressFile.originalPdfId]) {
+                            officeGroups[compressFile.originalPdfId] = { name: compressFile.originalPdfName, originalFile: compressFile.originalFile, assets: [] };
                         }
+                        officeGroups[compressFile.originalPdfId].assets.push({ file: compressFile, blob: finalBlob });
                     } else {
                         standaloneFiles.push({ file: compressFile, blob: finalBlob, name: finalName });
                     }
@@ -954,48 +926,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                 addToast(`Failed to repack ${group.name}`, 'error');
             }
         }
-        
-        // Process PDF groups
-        for (const pdfId in pdfGroups) {
-            const group = pdfGroups[pdfId];
-            setStatusMessage(`Merging ${group.name}...`);
-            try {
-                const pdfDoc = await PDFDocument.create();
-                
-                // Sort pages by pageNumber
-                group.pages.sort((a, b) => (a.file.pageNumber || 0) - (b.file.pageNumber || 0));
-                
-                for (const page of group.pages) {
-                    const arrayBuffer = await page.blob.arrayBuffer();
-                    const image = await pdfDoc.embedJpg(arrayBuffer);
-                    const pdfPage = pdfDoc.addPage([image.width, image.height]);
-                    pdfPage.drawImage(image, {
-                        x: 0,
-                        y: 0,
-                        width: image.width,
-                        height: image.height,
-                    });
-                }
-                
-                const pdfBytes = await pdfDoc.save();
-                const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
-                
-                if (outputMode === 'zip') {
-                    zip.file(group.name, pdfBlob);
-                } else {
-                    outputFiles.push({
-                        name: group.name,
-                        url: URL.createObjectURL(pdfBlob),
-                        size: pdfBlob.size
-                    });
-                }
-                totalCompressedSize += pdfBlob.size;
-            } catch (error) {
-                console.error("Error creating PDF:", error);
-                addToast(`Failed to merge PDF: ${group.name}`, 'error');
-            }
-        }
-        
+
         // Process standalone files
         for (const item of standaloneFiles) {
             if (outputMode === 'zip') {
