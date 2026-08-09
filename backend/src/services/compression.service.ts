@@ -44,16 +44,23 @@ async function compressImage(inputPath: string, outputPath: string, quality: num
 }
 
 async function compressPdf(inputPath: string, outputPath: string, quality: number): Promise<void> {
-    const compatibility = '/screen';
-    const profile = quality >= 90 ? '/prepress' : quality >= 78 ? '/ebook' : compatibility;
-
     const args = [
         '-sDEVICE=pdfwrite',
         '-dCompatibilityLevel=1.4',
         '-dNOPAUSE',
         '-dQUIET',
         '-dBATCH',
-        `-dPDFSETTINGS=${profile}`,
+        // Instead of /screen which rasterizes text, we explicitly downsample images
+        '-dDownsampleColorImages=true',
+        '-dDownsampleGrayImages=true',
+        '-dDownsampleMonoImages=true',
+        `-dColorImageResolution=${quality >= 90 ? 300 : quality >= 78 ? 150 : 72}`,
+        `-dGrayImageResolution=${quality >= 90 ? 300 : quality >= 78 ? 150 : 72}`,
+        `-dMonoImageResolution=${quality >= 90 ? 300 : quality >= 78 ? 150 : 72}`,
+        // Preserve vectors/text
+        '-dCompressFonts=true',
+        '-dEmbedAllFonts=true',
+        '-dSubsetFonts=true',
         `-sOutputFile=${outputPath}`,
         inputPath,
     ];
@@ -94,21 +101,27 @@ async function compressZip(inputPath: string, outputPath: string, quality: numbe
 }
 
 /**
- * Find optimal quality level to achieve target file size using binary search
+ * Find optimal quality level to achieve target file size using binary search.
+ * Quality is clamped to a readability floor — we never destroy a document to
+ * hit the size target; if the target can't be reached at the floor we accept
+ * the larger (but still readable) output and report the achieved size.
  */
 async function findOptimalQualityForTarget(
     inputPath: string,
     targetBytes: number,
     fileType: string,
     tolerance: number = 0.05 // 5% tolerance
-): Promise<{ quality: number; achievedSize: number }> {
+): Promise<{ quality: number; achievedSize: number; qualityFloored: boolean }> {
+    // Never go below this quality: below it text/images become unreadable.
+    const MIN_QUALITY = 55;
     const tolerance_bytes = targetBytes * tolerance;
-    let low = 1;
+    let low = MIN_QUALITY;
     let high = 95;
-    let bestQuality = 50;
+    let bestQuality = MIN_QUALITY;
     let bestSize = 0;
     let iterations = 0;
     const maxIterations = 15;
+    let qualityFloored = false;
 
     // Create temp directory for testing
     const tempDir = path.join(path.dirname(inputPath), '.temp-compression-test');
@@ -133,6 +146,7 @@ async function findOptimalQualityForTarget(
             const size = await getFileSize(testOutputPath);
             bestSize = size;
             bestQuality = mid;
+            qualityFloored = mid <= MIN_QUALITY;
 
             // Clean up test file
             await fs.unlink(testOutputPath).catch(() => {});
@@ -141,15 +155,23 @@ async function findOptimalQualityForTarget(
                 // Within tolerance, we can stop
                 break;
             } else if (size > targetBytes + tolerance_bytes) {
-                // Too large, reduce quality
+                // Too large, reduce quality (but never below the readability floor)
                 high = mid - 1;
+                if (high < MIN_QUALITY) break;
             } else {
                 // Too small, increase quality
                 low = mid + 1;
             }
         }
 
-        return { quality: bestQuality, achievedSize: bestSize };
+        // If we hit the readability floor without reaching the target, prefer the
+        // largest readable size we managed (bestSize) — quality preservation wins.
+        if (qualityFloored && bestSize > targetBytes) {
+            // Re-enforce the floor on the returned quality.
+            return { quality: Math.max(bestQuality, MIN_QUALITY), achievedSize: bestSize, qualityFloored: true };
+        }
+
+        return { quality: bestQuality, achievedSize: bestSize, qualityFloored };
     } finally {
         // Clean up temp directory
         await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -169,8 +191,11 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
     const outputExt = ext === '.rar' ? '.zip' : ext;
     const outputPath = path.join(outputDir, `${base}_compressed${outputExt}`);
 
-    let quality = chooseQuality(job, detectedType);
+    let quality = job.options.lockQuality
+        ? clamp(job.options.quality ?? 78, 30, 95)
+        : chooseQuality(job, detectedType);
     let usedTargetBytes = false;
+    let qualityFloored = false;
 
     // If targetBytes is specified and not locked to a specific quality, find optimal quality
     if (job.options.targetBytes && !job.options.lockQuality) {
@@ -193,6 +218,7 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
                 );
                 quality = optimal.quality;
                 usedTargetBytes = true;
+                qualityFloored = optimal.qualityFloored;
             } catch (error) {
                 // If iterative compression fails, fall back to default quality
                 console.warn('Target-based compression failed, using default quality:', error);
@@ -220,9 +246,15 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
     if (usedTargetBytes) {
         const targetPercent = job.options.targetBytes ? Math.round((job.options.targetBytes / originalSize) * 100) : 0;
         const achievedPercent = Math.round((compressedSize / originalSize) * 100);
-        suggestions.unshift(
-            `Target: ${Math.round(job.options.targetBytes! / 1024)}KB | Achieved: ${Math.round(compressedSize / 1024)}KB`
-        );
+        if (qualityFloored) {
+            suggestions.unshift(
+                `Target ${Math.round(job.options.targetBytes! / 1024)}KB unreachable without losing readability — kept quality at ${quality}% (achieved ${Math.round(compressedSize / 1024)}KB)`
+            );
+        } else {
+            suggestions.unshift(
+                `Target: ${Math.round(job.options.targetBytes! / 1024)}KB | Achieved: ${Math.round(compressedSize / 1024)}KB`
+            );
+        }
     } else if (savingsPercent < 5) {
         suggestions.unshift('Minimal savings detected. Try web or email preset for stronger reduction.');
     }

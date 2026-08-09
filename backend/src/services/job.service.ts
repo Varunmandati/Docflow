@@ -1,7 +1,8 @@
-import { withApiClient, withUserContext, workerPool } from '../db/client.js';
+import { withApiClient, withUserContext } from '../db/client.js';
 
 export interface CreateJobInput {
-  userId?: string;           // null for anonymous jobs
+  id?: string;               // explicit DB job id (== BullMQ job id when provided)
+  userId?: string;           // Firebase UID — null for anonymous jobs
   bullmqJobId?: string;
   jobType: 'conversion' | 'compression' | 'torrent';
   inputFilename: string;
@@ -30,21 +31,21 @@ export interface Job {
   completed_at: Date | null;
   expires_at: Date | null;
   download_token: string | null;
+  storage_path: string | null;
+  output_size_bytes: number | null;
 }
 
 export class JobService {
 
   async createJob(input: CreateJobInput): Promise<Job> {
-    return withApiClient(async (client) => {
-      const result = await client.query<Job>(`
-        INSERT INTO jobs (
-          user_id, bullmq_job_id, job_type, input_filename,
-          input_size_bytes, input_format, output_format, conversion_type, options_json
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING *
-      `, [
+    const insert = async (client: any) => {
+      const columns = [
+        'user_id', 'bullmq_job_id', 'job_type', 'input_filename',
+        'input_size_bytes', 'input_format', 'output_format', 'conversion_type', 'options_json',
+      ];
+      const values: unknown[] = [
         input.userId ?? null,
-        input.bullmqJobId ?? null,
+        input.bullmqJobId ?? input.id ?? null,
         input.jobType,
         // Sanitize filename — strip path traversal
         input.inputFilename.replace(/[/\\<>:"|?*\x00-\x1f]/g, '_').slice(0, 512),
@@ -53,9 +54,27 @@ export class JobService {
         input.outputFormat ?? null,
         input.conversionType ?? null,
         input.optionsJson ? JSON.stringify(input.optionsJson) : null,
-      ]);
+      ];
+
+      // Explicit id lets the DB row match the BullMQ job id (same uuid)
+      if (input.id) {
+        columns.unshift('id');
+        values.unshift(input.id);
+      }
+
+      const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
+      const result = await client.query(
+        `INSERT INTO jobs (${columns.join(', ')}) VALUES (${placeholders}) RETURNING *`,
+        values
+      );
       return result.rows[0];
-    });
+    };
+
+    // RLS requires the user context to be set for authenticated inserts.
+    if (input.userId) {
+      return withUserContext(input.userId, insert);
+    }
+    return withApiClient(insert);
   }
 
   // Get job — RLS ensures user only gets their own if userId set
@@ -137,47 +156,6 @@ export class JobService {
         total: parseInt(countResult.rows[0].count),
       };
     });
-  }
-
-  // Called by worker to update job status — uses worker pool (bypasses RLS)
-  async updateJobStatus(jobId: string, updates: {
-    status?: string;
-    progress?: number;
-    outputFilename?: string;
-    outputSizeBytes?: number;
-    storagePath?: string;
-    errorMessage?: string;
-    downloadToken?: string;
-    startedAt?: boolean;
-    completedAt?: boolean;
-    expiresAt?: Date;
-  }): Promise<void> {
-    const setClauses: string[] = [];
-    const params: unknown[] = [];
-
-    const addParam = (clause: string, value: unknown) => {
-      params.push(value);
-      setClauses.push(`${clause} = $${params.length}`);
-    };
-
-    if (updates.status) addParam('status', updates.status);
-    if (updates.progress !== undefined) addParam('progress', updates.progress);
-    if (updates.outputFilename) addParam('output_filename', updates.outputFilename.slice(0, 512));
-    if (updates.outputSizeBytes) addParam('output_size_bytes', updates.outputSizeBytes);
-    if (updates.storagePath) addParam('storage_path', updates.storagePath);
-    if (updates.errorMessage) addParam('error_message', updates.errorMessage.slice(0, 2000));
-    if (updates.downloadToken) addParam('download_token', updates.downloadToken);
-    if (updates.startedAt) addParam('started_at', new Date());
-    if (updates.completedAt) addParam('completed_at', new Date());
-    if (updates.expiresAt) addParam('expires_at', updates.expiresAt);
-
-    if (setClauses.length === 0) return;
-    
-    params.push(jobId);
-    await workerPool.query(
-      `UPDATE jobs SET ${setClauses.join(', ')} WHERE id = $${params.length}`,
-      params
-    );
   }
 
   // Dashboard stats for user

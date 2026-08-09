@@ -10,7 +10,7 @@ export const apiPool = new Pool({
   max: parseInt(env.DB_POOL_MAX ?? '10'),
   idleTimeoutMillis: parseInt(env.DB_IDLE_TIMEOUT_MS ?? '30000'),
   connectionTimeoutMillis: 5000,
-  ssl: env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
 });
 
 // Worker pool — uses docflow_worker role (separate credentials)
@@ -20,7 +20,7 @@ export const workerPool = new Pool({
   max: 5,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
-  ssl: env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
 });
 
 // CRITICAL: Set RLS context for every API query inside a transaction block

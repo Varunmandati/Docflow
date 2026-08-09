@@ -4,7 +4,7 @@ dotenv.config();
 import pg from 'pg';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
-import { fileURLToPath } from 'url';
+const MIGRATIONS_DIR = join(process.cwd(), 'src', 'db', 'migrations');
 
 const { Pool } = pg;
 
@@ -12,8 +12,6 @@ const ADMIN_URL = process.env.POSTGRES_ADMIN_URL;
 if (!ADMIN_URL) throw new Error('POSTGRES_ADMIN_URL is required for migrations');
 
 const pool = new Pool({ connectionString: ADMIN_URL });
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, 'migrations');
 
 async function runMigrations() {
   const client = await pool.connect();

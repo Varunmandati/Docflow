@@ -1,5 +1,5 @@
 import path from 'path';
-import { Worker } from '../queue/fake-bullmq.js';
+import { Worker, Job } from 'bullmq';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { CompressionJobData, BatchImageConversionJobData } from '../models/types.js';
@@ -9,7 +9,6 @@ import { updateJobStatus, setJobResult } from '../services/job-state.service.js'
 import { runCompressionJob } from '../services/compression.service.js';
 import { combineImagesToSinglePdf } from '../services/image-to-pdf.service.js';
 import { createJobWorkspace, copyInputToWorkspace, getFileSize, toRelativeStoragePath } from '../services/storage.service.js';
-import { jobService } from '../services/job.service.js';
 import { auditService } from '../services/audit.service.js';
 import crypto from 'crypto';
 
@@ -22,7 +21,7 @@ function isBatchImageJob(data: CompressionOrImageJobData): data is BatchImageCon
 export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
     const worker = new Worker<CompressionOrImageJobData>(
         COMPRESSION_QUEUE_NAME,
-        async (job) => {
+        async (job: Job<CompressionOrImageJobData>) => {
             const data = job.data;
 
             // Handle batch image conversion
@@ -32,11 +31,6 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
                     stage: 'validating',
                     progress: 10,
                     message: 'Validating image files.',
-                });
-
-                await jobService.updateJobStatus(data.jobId, {
-                    status: 'processing',
-                    progress: 10,
                     startedAt: true,
                 });
 
@@ -107,18 +101,14 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
 
                 await setJobResult(data.jobId, result);
 
+                const downloadToken = crypto.randomBytes(32).toString('hex');
+                const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
                 await updateJobStatus(data.jobId, {
                     status: 'completed',
                     stage: 'completed',
                     progress: 100,
                     message: `Successfully combined ${copiedImagePaths.length} images into PDF.`,
-                });
-
-                const downloadToken = crypto.randomBytes(32).toString('hex');
-                const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-                await jobService.updateJobStatus(data.jobId, {
-                    status: 'completed',
-                    progress: 100,
                     outputFilename: data.outputFileName,
                     outputSizeBytes: pdfSize,
                     storagePath: pdfRelativePath,
@@ -128,11 +118,12 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
                 });
 
                 auditService.log({
+                    userId: data.userId,
                     eventType: 'job.completed',
                     severity: 'info',
                     resourceId: data.jobId,
                     metadata: { type: 'batch-combine', outputFilename: data.outputFileName }
-                }, 'worker');
+                });
 
                 return result;
             }
@@ -145,11 +136,6 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
                 stage: 'validating',
                 progress: 5,
                 message: 'Preparing compression workspace.',
-            });
-
-            await jobService.updateJobStatus(compressionData.jobId, {
-                status: 'processing',
-                progress: 5,
                 startedAt: true,
             });
 
@@ -172,32 +158,29 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
 
             await setJobResult(compressionData.jobId, result);
 
+            const downloadToken = crypto.randomBytes(32).toString('hex');
+            const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
             await updateJobStatus(compressionData.jobId, {
                 status: 'completed',
                 stage: 'completed',
                 progress: 100,
                 message: 'Compression completed successfully.',
-            });
-
-            const downloadToken = crypto.randomBytes(32).toString('hex');
-            const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-            await jobService.updateJobStatus(compressionData.jobId, {
-                status: 'completed',
-                progress: 100,
-                outputFilename: result.outputs.compressed.relativePath.split('/').pop(),
-                outputSizeBytes: result.outputs.compressed.size,
-                storagePath: result.outputs.compressed.relativePath,
+                outputFilename: result.outputs.primary.relativePath.split('/').pop(),
+                outputSizeBytes: result.outputs.primary.size,
+                storagePath: result.outputs.primary.relativePath,
                 downloadToken,
                 completedAt: true,
                 expiresAt,
             });
 
             auditService.log({
+                userId: compressionData.userId,
                 eventType: 'job.completed',
                 severity: 'info',
                 resourceId: compressionData.jobId,
-                metadata: { inputName: compressionData.inputName, size: result.outputs.compressed.size }
-            }, 'worker');
+                metadata: { inputName: compressionData.inputName, size: result.outputs.primary.size }
+            });
 
             return result;
         },
@@ -207,35 +190,32 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
         }
     );
 
-    worker.on('completed', (job) => {
+    worker.on('completed', (job: Job<CompressionOrImageJobData>, result) => {
         logger.info({ jobId: job.id }, 'Compression/Image job completed');
     });
 
-    worker.on('failed', async (job, error) => {
-        const jobId = String(job?.id ?? 'unknown');
+    worker.on('failed', async (job: Job<CompressionOrImageJobData> | undefined, failedReason) => {
+        const jobId = job?.data.jobId ?? String(job?.id ?? 'unknown');
+        const message = typeof failedReason === 'string' ? failedReason : failedReason instanceof Error ? failedReason.message : 'Job failed.';
+
         await updateJobStatus(jobId, {
             status: 'failed',
             stage: 'failed',
             progress: 100,
-            error: error.message,
+            error: message,
             message: 'Job failed.',
-        });
-
-        await jobService.updateJobStatus(jobId, {
-            status: 'failed',
-            progress: 100,
-            errorMessage: error.message,
             completedAt: true,
         });
 
         auditService.log({
+            userId: job?.data.userId,
             eventType: 'job.failed',
             severity: 'error',
             resourceId: jobId,
-            metadata: { error: error.message }
-        }, 'worker');
+            metadata: { error: message }
+        });
 
-        logger.error({ jobId, err: error }, 'Compression/Image job failed');
+        logger.error({ jobId, err: message }, 'Compression/Image job failed');
     });
 
     return worker;

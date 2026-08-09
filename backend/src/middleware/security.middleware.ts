@@ -50,13 +50,6 @@ export async function validateCsrfToken(sessionId: string, token: string): Promi
  * Apply rate limiting to specific routes
  */
 export function setupRateLimitedRoutes(app: FastifyInstance) {
-    // Rate limit OTP requests: 5 per minute per IP
-    app.addHook('onRequest', async (request, reply) => {
-        if (request.url.includes('/otp/request') || request.url.includes('/auth/otp/request')) {
-            await rateLimitMiddleware(request, reply, 5, 60);
-        }
-    });
-
     // Rate limit conversion uploads: 20 per 5 minutes per IP
     app.addHook('onRequest', async (request, reply) => {
         if (request.url === '/v1/files/upload' && request.method === 'POST') {
@@ -91,21 +84,4 @@ export function setSecureCookie(
     });
 }
 
-/**
- * Get token from cookie or Authorization header
- */
-export function extractAuthToken(request: FastifyRequest): string | null {
-    // Try Authorization header first (Bearer token)
-    const authHeader = request.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-        return authHeader.substring(7);
-    }
 
-    // Try httpOnly cookie
-    const token = request.cookies.accessToken;
-    if (token) {
-        return token;
-    }
-
-    return null;
-}

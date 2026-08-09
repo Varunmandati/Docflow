@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { SpinnerIcon, CheckCircleIcon, ExclamationCircleIcon, XCircleIcon } from './Icons';
+import { SpinnerIcon, CheckCircleIcon, ExclamationCircleIcon } from './Icons';
 
 interface UploadProgressIndicatorProps {
   fileName: string;
