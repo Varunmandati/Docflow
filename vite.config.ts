@@ -21,7 +21,8 @@ export default defineConfig(({ mode }) => {
           },
           '/api/torrents': {
             target: 'http://127.0.0.1:3002',
-            changeOrigin: true
+            changeOrigin: true,
+            rewrite: (path) => path
           }
         }
       },

@@ -219,7 +219,7 @@ async function startServer() {
   loadSavedMagnets();
 
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3002;
 
   // Custom CORS/Preflight support
   app.use((req, res, next) => {
@@ -235,7 +235,7 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
 
   // API to add a torrent and get its metadata
-  app.post('/api/torrents', (req, res) => {
+  app.post('/api/torrents', async (req, res) => {
     const { magnet } = req.body;
     if (!magnet) {
       return res.status(400).json({ error: 'Magnet link required' });
@@ -261,7 +261,11 @@ async function startServer() {
         const infoHashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/);
         const h = infoHashMatch ? infoHashMatch[1].toLowerCase() : '';
         if (h) {
-          torrent = client.get(h);
+          try {
+            torrent = await client.get(h);
+          } catch (e) {
+            torrent = null;
+          }
         }
       }
 
@@ -276,7 +280,11 @@ async function startServer() {
             const match = addErr.message.match(/([a-fA-F0-9]{40})/);
             const h = match ? match[1].toLowerCase() : '';
             if (h) {
-              torrent = client.get(h);
+              try {
+                torrent = await client.get(h);
+              } catch (e) {
+                torrent = null;
+              }
             }
           }
           if (!torrent) throw addErr;
@@ -298,10 +306,27 @@ async function startServer() {
         }
       });
       
-      torrent.on('error', (err: any) => {
-        if (!res.headersSent) {
-          res.status(500).json({ error: err.message || err.toString() });
+      torrent.on('error', async (err: any) => {
+        if (res.headersSent) return;
+        const msg = err && err.message ? String(err.message) : String(err);
+        // WebTorrent destroys a re-added torrent as a duplicate instead of
+        // throwing synchronously. Resolve it to the already-active torrent.
+        if (msg.toLowerCase().includes('duplicate')) {
+          const match = msg.match(/([a-fA-F0-9]{40})/);
+          const h = match ? match[1].toLowerCase() : '';
+          if (h) {
+            try {
+              const existing = await client.get(h);
+              if (existing && existing.ready) {
+                saveTorrentFile(existing);
+                return res.json(getTorrentStats(existing));
+              }
+            } catch (e) {
+              // fall through to 500 below
+            }
+          }
         }
+        res.status(500).json({ error: msg });
       });
 
     } catch (err: any) {
@@ -382,13 +407,124 @@ async function startServer() {
     }
   });
 
+  // API to pause / resume / remove a specific torrent
+  app.post('/api/torrents/:infoHash/action', async (req, res) => {
+    try {
+      const { infoHash } = req.params;
+      const { action } = req.body || {};
+
+      if (!infoHash || !action) {
+        return res.status(400).json({ error: 'infoHash and action are required' });
+      }
+
+      const h = infoHash.toLowerCase();
+      // WebTorrent 3.x `client.get()` is async (returns a Promise<Torrent>).
+      let torrent: any = null;
+      try {
+        torrent = await client.get(h);
+      } catch (e) {
+        torrent = null;
+      }
+
+      if (!torrent) {
+        return res.status(404).json({ error: `Torrent not found: ${infoHash}` });
+      }
+
+      switch (action) {
+        case 'pause':
+          torrent.pause();
+          break;
+        case 'resume':
+          torrent.resume();
+          break;
+        case 'remove': {
+          const name = torrent.name || h;
+          client.remove(h, { destroyStore: true }, () => {
+            // Delete the on-disk meta caches for this infoHash so it does not
+            // get auto-restored on the next server start.
+            try {
+              const dir = path.join(process.cwd(), '.torrents');
+              ['torrents.json'].forEach((f) => {
+                const p = path.join(dir, f);
+                if (fs.existsSync(p)) {
+                  const saved = JSON.parse(fs.readFileSync(p, 'utf8')) as string[];
+                  fs.writeFileSync(p, JSON.stringify(saved.filter((m) => !m.includes(h)), null, 2), 'utf8');
+                }
+              });
+              const metaPath = path.join(dir, `${h}.json`);
+              if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+              const torrentFilePath = path.join(dir, `${h}.torrent`);
+              if (fs.existsSync(torrentFilePath)) fs.unlinkSync(torrentFilePath);
+            } catch (err) {
+              console.error('Failed to clean meta cache on remove:', err);
+            }
+            console.log(`Removed torrent ${h} (${name})`);
+          });
+          return res.json({ infoHash: h, removed: true });
+        }
+        default:
+          return res.status(400).json({ error: `Unsupported action: ${action}` });
+      }
+
+      const stats = getTorrentStats(torrent);
+      return res.json(stats);
+    } catch (err: any) {
+      console.error('Torrent action error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message || 'Failed to perform action on torrent' });
+      }
+    }
+  });
+
+  // API to remove all active torrents and clean cached files from disk
+  app.post('/api/torrents/cleanup', (req, res) => {
+    try {
+      let removed = 0;
+      if (client && client.torrents) {
+        client.torrents.slice().forEach(t => {
+          client.remove((t as any).infoHash, { destroyStore: true });
+          removed++;
+        });
+      }
+
+      // Remove all meta caches (json + torrent files) except torrents.json list
+      const torrentsDir = path.join(process.cwd(), '.torrents');
+      if (fs.existsSync(torrentsDir)) {
+        const files = fs.readdirSync(torrentsDir);
+        files.forEach(file => {
+          if (file.toLowerCase().endsWith('.json') && file.toLowerCase() !== 'torrents.json') {
+            fs.unlinkSync(path.join(torrentsDir, file));
+          }
+          if (file.toLowerCase().endsWith('.torrent')) {
+            fs.unlinkSync(path.join(torrentsDir, file));
+          }
+        });
+        // Reset the saved magnet list
+        const torrentsJson = path.join(torrentsDir, 'torrents.json');
+        if (fs.existsSync(torrentsJson)) {
+          fs.writeFileSync(torrentsJson, '[]', 'utf8');
+        }
+      }
+
+      res.json({ deleted: removed });
+    } catch (err) {
+      console.error('Torrent cleanup error:', err);
+      res.status(500).json({ error: 'Failed to clean torrent caches' });
+    }
+  });
+
   // API to download a specific file natively via HTTP streaming
   app.get('/api/torrents/:infoHash/files/:fileIndex', async (req, res) => {
     try {
       const { infoHash, fileIndex } = req.params;
       const h = infoHash.toLowerCase();
       
-      let torrent = client.get(infoHash) as any;
+      let torrent: any = null;
+      try {
+        torrent = await client.get(h);
+      } catch (e) {
+        torrent = null;
+      }
       let file: any = null;
       let torrentPath = path.join(process.cwd(), '.torrents');
       let fileName = '';
@@ -573,6 +709,7 @@ function getTorrentStats(t: WebTorrent.Torrent) {
     const stats = {
       infoHash: t.infoHash || '',
       name: name,
+      paused: !!(t as any).paused,
       progress: overallProgress,
       downloadSpeed: isDone ? 0 : t.downloadSpeed,
       uploadSpeed: isDone ? 0 : t.uploadSpeed,

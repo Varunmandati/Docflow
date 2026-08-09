@@ -44,7 +44,7 @@ export interface TorrentStats {
   paused?: boolean;
 }
 
-const TORRENT_SERVER_URL = '';
+const TORRENT_SERVER_URL = (import.meta.env.VITE_TORRENT_SERVER_URL || '').replace(/\/$/, '');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const formatBytes = (bytes: number, decimals = 2): string => {

@@ -23,7 +23,10 @@ export interface ConversionJobData {
     fileId: string;
     inputPath: string;
     inputName: string;
-    outputs: Required<OutputRequest>;
+    sourceFormat: string;
+    targetFormat: string;
+    options?: any;
+    userId?: string; // Firebase UID — set for authenticated jobs
 }
 
 export interface BatchImageConversionJobData {
@@ -32,6 +35,7 @@ export interface BatchImageConversionJobData {
     imageFilePaths: string[]; // Array of image paths in sequential order
     imageNames: string[]; // Original file names for reference
     outputFileName: string;
+    userId?: string; // Firebase UID
 }
 
 export type CompressionPreset = 'optimize' | 'web' | 'email' | 'whatsapp' | 'print';
@@ -49,6 +53,7 @@ export interface CompressionJobData {
     inputPath: string;
     inputName: string;
     options: CompressionOptions;
+    userId?: string; // Firebase UID
 }
 
 export interface OutputFileRef {
@@ -61,10 +66,8 @@ export interface ConversionResult {
     jobId: string;
     fileId: string;
     outputs: {
-        pdf: OutputFileRef & { pageCount: number };
+        primary: OutputFileRef & { pageCount?: number };
         splitPages?: OutputFileRef[];
-        images?: OutputFileRef[];
-        html?: OutputFileRef & { mode: 'pdf2htmlex' | 'fallback' };
     };
     completedAt: string;
 }
@@ -106,49 +109,11 @@ export interface BatchImageConversionResult {
     completedAt: string;
 }
 
-export interface TorrentFileInfo {
-    name: string;
-    length: number;
-    path: string;
-}
-
-export interface TorrentMetadata {
-    name: string;
-    infoHash: string;
-    files: TorrentFileInfo[];
-    totalLength: number;
-    announce: string[];
-    created: string;
-    comment?: string;
-}
-
-export interface TorrentConversionJobData {
-    jobId: string;
-    fileId: string;
-    inputPath: string;
-    inputName: string;
-    fileFilter?: string[]; // Optional: specific files to download
-}
-
-export interface TorrentConversionResult {
-    jobId: string;
-    fileId: string;
-    outputs: {
-        archive: OutputFileRef;
-        torrentInfo: {
-            name: string;
-            totalLength: number;
-            filesCount: number;
-        };
-    };
-    completedAt: string;
-}
-
-export type JobResult = ConversionResult | CompressionResult | BatchImageConversionResult | TorrentConversionResult;
+export type JobResult = ConversionResult | CompressionResult | BatchImageConversionResult;
 
 export interface JobStatus {
     jobId: string;
-    status: 'queued' | 'in_progress' | 'completed' | 'failed';
+    status: 'queued' | 'in_progress' | 'completed' | 'failed' | 'expired';
     stage: string;
     progress: number;
     message?: string;
