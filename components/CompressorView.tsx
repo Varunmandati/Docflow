@@ -6,6 +6,7 @@ import ProgressBar from './ProgressBar';
 import { CompressorTranslation } from '../translations';
 import { CheckIcon, CloseIcon, CompressIcon, DownloadIcon, FileIcon, FolderZipIcon, PlusIcon, SpinnerIcon, TrashIcon, UploadIcon } from './Icons';
 import { TrustBadges, TrustMessage } from './TrustBadges';
+import { authFetch } from '../services/authFetch';
 
 declare const JSZip: any;
 
@@ -149,7 +150,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         const uploadForm = new FormData();
         uploadForm.append('file', compressFile.file, compressFile.file.name);
 
-        const uploadResponse = await fetch(buildApiUrl(apiBase, '/v1/files/upload'), {
+        const uploadResponse = await authFetch(buildApiUrl(apiBase, '/v1/files/upload'), {
             method: 'POST',
             body: uploadForm,
         });
@@ -172,7 +173,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             fileTargetBytes = Math.max(1, Math.floor(targetTotalBytesForRun));
         }
 
-        const compressResponse = await fetch(buildApiUrl(apiBase, '/v1/compress'), {
+        const compressResponse = await authFetch(buildApiUrl(apiBase, '/v1/compress'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -202,7 +203,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
 
         let done = false;
         while (!done) {
-            const statusResponse = await fetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}`));
+            const statusResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}`));
             if (!statusResponse.ok) {
                 throw new Error(`Status request failed for ${compressFile.file.name}`);
             }
@@ -224,7 +225,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             await sleep(1200);
         }
 
-        const resultResponse = await fetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
+        const resultResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
         if (!resultResponse.ok) {
             throw new Error(`Result request failed for ${compressFile.file.name}`);
         }
@@ -235,7 +236,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             throw new Error(`Compressed output missing for ${compressFile.file.name}`);
         }
 
-        const response = await fetch(buildApiUrl(apiBase, output.downloadUrl));
+        const response = await authFetch(buildApiUrl(apiBase, output.downloadUrl));
         if (!response.ok) {
             throw new Error(`Failed to fetch compressed output for ${compressFile.file.name}`);
         }

@@ -45,7 +45,7 @@ export async function cleanupExpiredJobs() {
           severity: 'info',
           resourceId: job.id,
           metadata: { reason: 'expiry' }
-      }, 'worker');
+      });
     }
   } catch (err: any) {
     logger.error({ err }, 'Failed to run cleanup cron for expired files');

@@ -1,6 +1,7 @@
 import React from 'react';
 import { DownloadableFile } from '../types';
 import { DownloadIcon, FileIcon, FolderZipIcon, SparklesIcon, SpinnerIcon } from './Icons';
+import { authFetch } from '../services/authFetch';
 
 declare const JSZip: any;
 
@@ -13,8 +14,40 @@ interface DownloadListProps {
     t: any;
 }
 
+const isBlobUrl = (url: string): boolean => url.startsWith('blob:' );
+
 const DownloadList: React.FC<DownloadListProps> = ({ files, aiSuggestedName, isSuggestingName, finalFileName, onFinalFileNameChange, t }) => {
-    
+
+    // Backend artifact URLs are auth-protected, so fetch them with the Bearer
+    // header; blob: URLs (locally generated) can be fetched directly.
+    const toDownloadableBlob = async (file: DownloadableFile): Promise<Blob> => {
+        const response = isBlobUrl(file.url) ? await fetch(file.url) : await authFetch(file.url);
+        if (!response.ok) {
+            throw new Error(`Failed to download ${file.name}`);
+        }
+        return response.blob();
+    };
+
+    const triggerDownload = (blob: Blob, fileName: string) => {
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+    };
+
+    const handleDownloadSingle = async (file: DownloadableFile) => {
+        try {
+            const blob = await toDownloadableBlob(file);
+            triggerDownload(blob, `${file.name}.${file.format}`);
+        } catch (error) {
+            console.error(`Failed to download ${file.name}:`, error);
+        }
+    };
+
     const handleDownloadZip = async () => {
         if (!files || files.length === 0) return;
         
@@ -22,8 +55,7 @@ const DownloadList: React.FC<DownloadListProps> = ({ files, aiSuggestedName, isS
         
         for (const file of files) {
             try {
-                const response = await fetch(file.url);
-                const blob = await response.blob();
+                const blob = await toDownloadableBlob(file);
                 zip.file(`${file.name}.${file.format}`, blob);
             } catch (error) {
                 console.error(`Failed to fetch ${file.name} for zipping:`, error);
@@ -118,7 +150,7 @@ const DownloadList: React.FC<DownloadListProps> = ({ files, aiSuggestedName, isS
                         </div>
                         <a 
                             href={file.url} 
-                            download={`${file.name}.${file.format}`}
+                            onClick={(e) => { e.preventDefault(); handleDownloadSingle(file); }}
                             className="flex items-center justify-center gap-1.5 bg-[var(--primary-color)] hover:bg-[var(--primary-color-hover)] text-[var(--primary-text)] font-semibold py-1.5 px-3 rounded-md shadow-lg shadow-orange-500/10 dark:shadow-black/40 transition-all duration-200 text-sm transform hover:scale-105"
                         >
                             <DownloadIcon className="w-4 h-4" />

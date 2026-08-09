@@ -16,6 +16,7 @@ import { useToast } from '../hooks/useToast';
 import UploadProgressIndicator from './UploadProgressIndicator';
 import ConversionProgressWithStages from './ConversionProgressWithStages';
 import ErrorState from './ErrorState';
+import { authFetch } from '../services/authFetch';
 
 declare const jspdf: any;
 declare const Tiff: any;
@@ -122,7 +123,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     const zipDownloadables = async (items: DownloadableFile[], zipName: string): Promise<DownloadableFile> => {
         const zip = new JSZip();
         for (const item of items) {
-            const response = await fetch(item.url);
+            const response = await authFetch(item.url);
             if (!response.ok) {
                 throw new Error(`Failed to fetch converted artifact: ${item.name}`);
             }
@@ -148,7 +149,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         const uploadForm = new FormData();
         uploadForm.append('file', appFile.file, appFile.file.name);
 
-        const uploadResponse = await fetch(buildApiUrl(apiBase, '/v1/files/upload'), {
+        const uploadResponse = await authFetch(buildApiUrl(apiBase, '/v1/files/upload'), {
             method: 'POST',
             body: uploadForm,
         });
@@ -171,7 +172,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             outputs.dpi = 200;
         }
 
-        const convertResponse = await fetch(buildApiUrl(apiBase, '/v1/convert'), {
+        const convertResponse = await authFetch(buildApiUrl(apiBase, '/v1/convert'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -192,7 +193,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
 
         let done = false;
         while (!done) {
-            const statusResponse = await fetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}`));
+            const statusResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}`));
             if (!statusResponse.ok) {
                 const details = await statusResponse.text();
                 throw new Error(`Status check failed for ${appFile.file.name}: ${details}`);
@@ -216,7 +217,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             await sleep(1200);
         }
 
-        const resultResponse = await fetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
+        const resultResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
         if (!resultResponse.ok) {
             const details = await resultResponse.text();
             throw new Error(`Result fetch failed for ${appFile.file.name}: ${details}`);
@@ -262,7 +263,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         setStatusMessage('Sending batch image conversion request to backend...');
         setProgress({ current: 1, total: imageFileIds.length + 5, percentage: 20 });
 
-        const combinePdfResponse = await fetch(buildApiUrl(apiBase, '/v1/images/combine-to-pdf'), {
+        const combinePdfResponse = await authFetch(buildApiUrl(apiBase, '/v1/images/combine-to-pdf'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -289,7 +290,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         let done = false;
         let pollCount = 0;
         while (!done) {
-            const statusResponse = await fetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}`));
+            const statusResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}`));
             if (!statusResponse.ok) {
                 const details = await statusResponse.text();
                 throw new Error(`Status check failed: ${details}`);
@@ -320,7 +321,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             }
         }
 
-        const resultResponse = await fetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
+        const resultResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
         if (!resultResponse.ok) {
             const details = await resultResponse.text();
             throw new Error(`Result fetch failed: ${details}`);
@@ -645,7 +646,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 const uploadForm = new FormData();
                 uploadForm.append('file', file, file.name);
 
-                const uploadResponse = await fetch(buildApiUrl(apiBase, '/v1/files/upload'), {
+                const uploadResponse = await authFetch(buildApiUrl(apiBase, '/v1/files/upload'), {
                     method: 'POST',
                     body: uploadForm,
                 });
@@ -1196,6 +1197,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                                     stages={conversionStages}
                                     totalProgress={progress.percentage}
                                     fileName={files[0]?.file.name}
+                                    jobId=""
                                 />
                             ) : (
                                 <>

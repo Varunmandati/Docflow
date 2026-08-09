@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-calc \
     libreoffice-impress \
     poppler-utils \
+    ghostscript \
+    ffmpeg \
+    p7zip-full \
     fonts-dejavu \
     fonts-liberation \
     fonts-noto \

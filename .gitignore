@@ -72,11 +72,11 @@ test-del.js
 test_archive.zip
 test_conversion.py
 poll_job.py
-mock-redis.js
 backend/test-email-otp.js
 backend/test-smtp-direct.js
 stream-service/test-*.js
 stream-service/add-upload.js
+tmp_css_log.txt
 
 # ========================
 # Prompt History & AI
