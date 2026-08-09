@@ -36,8 +36,19 @@ export async function executeCommand(
             stderr += chunk.toString();
         });
 
-        child.on('error', (error) => {
+        child.on('error', (error: NodeJS.ErrnoException) => {
             clearTimeout(timeout);
+            // A missing/unlaunchable binary (e.g. ENOENT) should surface as a
+            // process failure result so callers can fall back gracefully,
+            // instead of throwing and aborting the whole job.
+            if (error.code === 'ENOENT') {
+                resolve({
+                    code: 127,
+                    stdout,
+                    stderr: `Command not found: ${binary}`,
+                });
+                return;
+            }
             reject(error);
         });
 
