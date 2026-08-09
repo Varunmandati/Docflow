@@ -34,9 +34,13 @@ export async function buildServer() {
     });
 
     await app.register(cors, {
-        // Strict origin validation logic can be improved further, but for now we trust the ENV configuration
-        origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((value) => value.trim()),
-        credentials: true,
+        // Explicit allowlist from CORS_ORIGIN (comma-separated) when configured.
+        // A reflective wildcard ('*' => true) is safe here only because the API
+        // authenticates via Authorization: Bearer headers, NOT cookies - so the
+        // OPEN-CORS + credentials:true combination the audit flagged is removed
+        // by keeping credentials strictly false.
+        origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((value) => value.trim()).filter(Boolean),
+        credentials: false,
     });
 
     await app.register(cookie);

@@ -34,12 +34,15 @@ export function startConversionWorker(): Worker<ConversionJobData> {
         async (job: Job<ConversionJobData>) => {
             const { jobId, fileId, inputPath, inputName, sourceFormat, targetFormat, options } = job.data;
 
+            // Only stamp startedAt on the first attempt so retries don't reset the duration.
+            const firstAttempt = job.attemptsMade === 0;
+
             await updateJobStatus(jobId, {
                 status: 'in_progress',
                 stage: 'validating',
                 progress: 5,
                 message: 'Preparing conversion workspace.',
-                startedAt: true,
+                startedAt: firstAttempt,
             });
 
             // Determine appropriate engine
@@ -128,24 +131,38 @@ export function startConversionWorker(): Worker<ConversionJobData> {
         const jobId = job?.data.jobId ?? String(job?.id ?? 'unknown');
         const message = typeof failedReason === 'string' ? failedReason : failedReason instanceof Error ? failedReason.message : 'Conversion failed.';
 
-        await updateJobStatus(jobId, {
-            status: 'failed',
-            stage: 'failed',
-            progress: 100,
-            error: message,
-            message: 'Conversion failed.',
-            completedAt: true,
-        });
+        // BullMQ's `failed` event fires after EVERY attempt, not just the final
+        // one. Only persist failure state when no retries remain; otherwise the
+        // DB status would flap failed -> in_progress on retried jobs.
+        const attempts = job?.opts.attempts ?? 1;
+        const isFinal = (job?.attemptsMade ?? 0) >= attempts;
 
-        auditService.log({
-            userId: job?.data.userId,
-            eventType: 'job.failed',
-            severity: 'error',
-            resourceId: jobId,
-            metadata: { error: message }
-        });
+        try {
+            if (isFinal) {
+                await updateJobStatus(jobId, {
+                    status: 'failed',
+                    stage: 'failed',
+                    progress: 100,
+                    error: message,
+                    message: 'Conversion failed.',
+                    completedAt: true,
+                });
+            }
 
-        logger.error({ jobId, err: message }, 'Conversion job failed');
+            auditService.log({
+                userId: job?.data.userId,
+                eventType: 'job.failed',
+                severity: 'error',
+                resourceId: jobId,
+                metadata: { error: message }
+            });
+
+            logger.error({ jobId, err: message }, 'Conversion job failed');
+        } catch (err) {
+            // A DB write failure here must never crash the process out from
+            // under BullMQ; log and move on.
+            logger.error({ jobId, err }, 'Failed to persist conversion failure state');
+        }
     });
 
     return worker;

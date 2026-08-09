@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { logger } from '../config/logger.js';
 import { auditService } from '../services/audit.service.js';
+import { env } from '../config/env.js';
 
 // Runs every hour — marks expired jobs, triggers file deletion
 export async function cleanupExpiredJobs() {
@@ -19,13 +20,20 @@ export async function cleanupExpiredJobs() {
     for (const job of result.rows) {
       try {
         const absolutePath = resolveStoragePath(job.storage_path);
-        // Recursively delete workspace directory/file
+        // Recursively delete the artifact file and the whole `jobs/{jobId}`
+        // workspace (input/, output/, pages/, images/, html/, .torrent-tmp).
+        // Storage paths look like `jobs/{jobId}/output/<file>`; walk up to the
+        // directory named after the job id so the full workspace is reclaimed.
         await fs.rm(absolutePath, { recursive: true, force: true });
-        
-        // Also delete parent job directory if it is empty/part of job workspace
-        const parentDir = path.dirname(absolutePath);
-        if (parentDir.endsWith(job.id)) {
-            await fs.rm(parentDir, { recursive: true, force: true }).catch(() => {});
+
+        let cursor = path.dirname(absolutePath);
+        const root = env.STORAGE_ROOT;
+        while (cursor.startsWith(root)) {
+          if (path.basename(cursor) === job.id) {
+            await fs.rm(cursor, { recursive: true, force: true }).catch(() => {});
+            break;
+          }
+          cursor = path.dirname(cursor);
         }
       } catch (e: any) {
         logger.warn({ jobId: job.id, err: e.message }, 'Could not delete expired file from filesystem');

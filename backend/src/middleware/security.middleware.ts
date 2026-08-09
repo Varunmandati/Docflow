@@ -50,16 +50,22 @@ export async function validateCsrfToken(sessionId: string, token: string): Promi
  * Apply rate limiting to specific routes
  */
 export function setupRateLimitedRoutes(app: FastifyInstance) {
+    // Match on the matched route template (request.routerPath) rather than
+    // request.url: the latter includes the query string, which would let a
+    // request like `/v1/files/upload?anything` bypass the limiter entirely.
+    const matchRoute = (request: FastifyRequest, route: string) =>
+        request.routerPath === route;
+
     // Rate limit conversion uploads: 20 per 5 minutes per IP
     app.addHook('onRequest', async (request, reply) => {
-        if (request.url === '/v1/files/upload' && request.method === 'POST') {
+        if (matchRoute(request, '/v1/files/upload') && request.method === 'POST') {
             await rateLimitMiddleware(request, reply, 20, 300);
         }
     });
 
     // Rate limit compression: 50 per 10 minutes per IP
     app.addHook('onRequest', async (request, reply) => {
-        if (request.url === '/v1/compress' && request.method === 'POST') {
+        if (matchRoute(request, '/v1/compress') && request.method === 'POST') {
             await rateLimitMiddleware(request, reply, 50, 600);
         }
     });

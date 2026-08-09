@@ -41,6 +41,25 @@ const BatchImageConversionSchema = z.object({
 });
 
 export async function filesRoutes(app: FastifyInstance) {
+    const enqueue = async (queue: any, jobName: string, jobId: string, jobData: any, opts: any) => {
+        try {
+            await queue.add(jobName, jobData, opts);
+        } catch (err) {
+            // A failed enqueue leaves the DB row stuck in 'queued' forever unless
+            // we compensate. Mark it failed so clients get a terminal state.
+            const message = err instanceof Error ? err.message : 'Failed to enqueue job';
+            await updateJobStatus(jobId, {
+                status: 'failed',
+                stage: 'failed',
+                progress: 100,
+                error: message,
+                message: 'Job could not be queued.',
+                completedAt: true,
+            }).catch(() => {});
+            throw err;
+        }
+    };
+
     app.post('/v1/files/upload', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
         const file = await request.file();
         if (!file) {
@@ -155,7 +174,7 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         } catch { /* audit is best-effort */ }
 
-        await conversionQueue.add('convert-document', jobData, {
+        await enqueue(conversionQueue, 'convert-document', jobId, jobData, {
             jobId,
             attempts: env.JOB_ATTEMPTS,
             backoff: {
@@ -240,7 +259,7 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         } catch { /* audit is best-effort */ }
 
-        await compressionQueue.add('compress-document', jobData, {
+        await enqueue(compressionQueue, 'compress-document', jobId, jobData, {
             jobId,
             attempts: env.JOB_ATTEMPTS,
             backoff: {
@@ -333,7 +352,7 @@ export async function filesRoutes(app: FastifyInstance) {
         });
 
         // Use compression queue for now (reusing existing queue infrastructure)
-        await compressionQueue.add('batch-combine-images', jobData, {
+        await enqueue(compressionQueue, 'batch-combine-images', jobId, jobData, {
             jobId,
             attempts: env.JOB_ATTEMPTS,
             backoff: {

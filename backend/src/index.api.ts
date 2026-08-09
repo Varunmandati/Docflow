@@ -6,6 +6,25 @@ import { startCompressionWorker } from './workers/compression.worker.js';
 import { startConversionWorker } from './workers/conversion.worker.js';
 import { startCleanupWorker } from './workers/cleanup.worker.js';
 import { initializeFirebaseAdmin } from './config/firebase.js';
+import { closeDatabaseConnections } from './db/client.js';
+import { redis } from './queue/connection.js';
+
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'Shutting down API server');
+    try {
+        await Promise.all([closeDatabaseConnections(), redis.quit()]);
+    } catch (err) {
+        logger.error({ err }, 'Error during API shutdown');
+    }
+    process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 async function startApi() {
     initializeFirebaseAdmin();
