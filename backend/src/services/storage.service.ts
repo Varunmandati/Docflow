@@ -12,13 +12,31 @@ const safeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, '_');
 const ensureInRoot = (resolvedPath: string) => {
     const normalizedRoot = path.resolve(env.STORAGE_ROOT);
     const normalizedTarget = path.resolve(resolvedPath);
-    if (!normalizedTarget.startsWith(normalizedRoot)) {
+    // Separator-aware boundary check: guard against sibling dirs that merely
+    // share the storage-root prefix (e.g. root=<storage>, target=<storage>-evil).
+    const within =
+        normalizedTarget === normalizedRoot ||
+        normalizedTarget.startsWith(normalizedRoot + path.sep);
+    if (!within) {
         throw new Error('Path traversal blocked.');
     }
     return normalizedTarget;
 };
 
-const uploadMetaPath = (fileId: string) => path.join(uploadsDir, `${fileId}.json`);
+// Upload records live at {uploadsDir}/{uuid}.json. Only accept actual UUID v4
+// identifiers so a user-supplied `fileId` cannot escape the uploads directory.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const assertValidFileId = (fileId: string) => {
+    if (!UUID_RE.test(fileId)) {
+        throw new Error('Invalid file identifier.');
+    }
+};
+
+const uploadMetaPath = (fileId: string) => {
+    assertValidFileId(fileId);
+    return path.join(uploadsDir, `${fileId}.json`);
+};
 
 export async function ensureStorageLayout(): Promise<void> {
     await fs.mkdir(uploadsDir, { recursive: true });

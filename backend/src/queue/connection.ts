@@ -13,12 +13,15 @@ export const redis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: false,
+    // Keep retrying forever (bounded backoff) so a transient Redis outage does
+    // not permanently kill the queue/worker for the lifetime of the process.
+    // Returning null here made ioredis give up forever after 30 failed retries,
+    // leaving orphaned jobs and dead workers until restart.
     retryStrategy(times) {
-        if (times > 30) {
-            logger.error('Redis connection lost after 30 retries — giving up');
-            return null;
+        if (times <= 3) {
+            return Math.min(times * 500, 1000);
         }
-        return Math.min(times * 500, 5000);
+        return 5000;
     },
 });
 

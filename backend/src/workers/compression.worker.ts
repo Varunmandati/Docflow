@@ -24,6 +24,9 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
         async (job: Job<CompressionOrImageJobData>) => {
             const data = job.data;
 
+            // Only stamp startedAt on the first attempt so retries don't reset duration.
+            const firstAttempt = job.attemptsMade === 0;
+
             // Handle batch image conversion
             if (isBatchImageJob(data)) {
                 await updateJobStatus(data.jobId, {
@@ -31,7 +34,7 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
                     stage: 'validating',
                     progress: 10,
                     message: 'Validating image files.',
-                    startedAt: true,
+                    startedAt: firstAttempt,
                 });
 
                 const workspace = await createJobWorkspace(data.jobId);
@@ -136,7 +139,7 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
                 stage: 'validating',
                 progress: 5,
                 message: 'Preparing compression workspace.',
-                startedAt: true,
+                startedAt: firstAttempt,
             });
 
             const workspace = await createJobWorkspace(compressionData.jobId);
@@ -198,24 +201,38 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
         const jobId = job?.data.jobId ?? String(job?.id ?? 'unknown');
         const message = typeof failedReason === 'string' ? failedReason : failedReason instanceof Error ? failedReason.message : 'Job failed.';
 
-        await updateJobStatus(jobId, {
-            status: 'failed',
-            stage: 'failed',
-            progress: 100,
-            error: message,
-            message: 'Job failed.',
-            completedAt: true,
-        });
+        // BullMQ's `failed` event fires after EVERY attempt, not just the final
+        // one. Only persist failure state when no retries remain; otherwise the
+        // DB status would flap failed -> in_progress on retried jobs.
+        const attempts = job?.opts.attempts ?? 1;
+        const isFinal = (job?.attemptsMade ?? 0) >= attempts;
 
-        auditService.log({
-            userId: job?.data.userId,
-            eventType: 'job.failed',
-            severity: 'error',
-            resourceId: jobId,
-            metadata: { error: message }
-        });
+        try {
+            if (isFinal) {
+                await updateJobStatus(jobId, {
+                    status: 'failed',
+                    stage: 'failed',
+                    progress: 100,
+                    error: message,
+                    message: 'Job failed.',
+                    completedAt: true,
+                });
+            }
 
-        logger.error({ jobId, err: message }, 'Compression/Image job failed');
+            auditService.log({
+                userId: job?.data.userId,
+                eventType: 'job.failed',
+                severity: 'error',
+                resourceId: jobId,
+                metadata: { error: message }
+            });
+
+            logger.error({ jobId, err: message }, 'Compression/Image job failed');
+        } catch (err) {
+            // A DB write failure here must never crash the process out from
+            // under BullMQ; log and move on.
+            logger.error({ jobId, err }, 'Failed to persist failure state');
+        }
     });
 
     return worker;

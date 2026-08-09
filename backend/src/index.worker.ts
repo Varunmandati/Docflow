@@ -2,12 +2,35 @@ import { logger } from './config/logger.js';
 import { ensureStorageLayout } from './services/storage.service.js';
 import { startConversionWorker } from './workers/conversion.worker.js';
 import { startCompressionWorker } from './workers/compression.worker.js';
-import { withApiClient } from './db/client.js';
+import { startCleanupWorker } from './workers/cleanup.worker.js';
+import { closeDatabaseConnections, withApiClient } from './db/client.js';
+import { redis } from './queue/connection.js';
+
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'Shutting down worker process');
+    try {
+        await Promise.all([closeDatabaseConnections(), redis.quit()]);
+    } catch (err) {
+        logger.error({ err }, 'Error during worker shutdown');
+    }
+    process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 async function startWorker() {
     await ensureStorageLayout();
     startConversionWorker();
     startCompressionWorker();
+    // Expired-artifact reclamation must run in the dedicated worker process
+    // too; previously it only started under RUN_INLINE_WORKERS in index.api.ts,
+    // so a production split deployment never expired storage.
+    startCleanupWorker();
 
     // Start background OTP cleanup task (runs every hour)
     setInterval(async () => {
