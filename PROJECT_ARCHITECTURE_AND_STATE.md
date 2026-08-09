@@ -24,7 +24,7 @@ The project utilizes two distinct backend processes:
 *   **Authentication:** Fully migrated to Firebase Auth (Native SDK in Frontend, Firebase Admin SDK in Backend). Custom OTP and JWT flows have been removed. User profiles are lazily synced to PostgreSQL (`getUserProfile` / `updateUserProfile`).
 *   **Architecture:** A robust API server for document conversions, compression, and future authentication. Uses BullMQ for background job processing and integrates with LibreOffice headless and Poppler utilities.
 
-**2. Torrent Streaming Server (`torrent-server.js`)**
+**2. Torrent Streaming Server (`streamtor/server.ts`)**
 *   **Runtime:** Node.js
 *   **Framework:** Express.js (Port 3002)
 *   **Torrent Engine:** WebTorrent (`webtorrent`) and `parse-torrent`
@@ -45,11 +45,11 @@ The project utilizes two distinct backend processes:
 *   **Stats Tracking:** Conversions (Success/Fail) update a global `Stats` object persisted in `localStorage`.
 
 ### B. Torrent Streaming (Streamtor Integration)
-*   **Components:** `TorrentConverterView.tsx` (Frontend), `torrent-server.js` (Backend).
+*   **Components:** `TorrentConverterView.tsx` (Frontend), `streamtor/server.ts` (Backend).
 *   **Flow:**
     1.  User enters a Magnet URL or uploads a `.torrent` file in `TorrentConverterView.tsx`.
     2.  Frontend sends a request to the local Express backend (`/api/torrents`).
-    3.  `torrent-server.js` checks the verified cache to see if the torrent was fully downloaded previously. If so, it bypasses WebTorrent hashing entirely and serves directly from the disk cache.
+    3.  `streamtor/server.ts` checks the verified cache to see if the torrent was fully downloaded previously. If so, it serves the cached metadata (disk-backed) and bypasses re-adding the torrent to the WebTorrent client.
     4.  If not verified, it uses `WebTorrent` to connect to the swarm, parse metadata, and fetch chunks.
     5.  Backend returns the file list with download progress.
     6.  Users can selectively download individual files to their device, served via native HTTP range requests from `/api/torrents/<infoHash>/files/<fileIndex>`.
@@ -69,8 +69,8 @@ The project utilizes two distinct backend processes:
 
 ### E. User Profile & Authentication
 *   **Components:** `ProfileView.tsx`, `AuthView.tsx`, `GoogleAccountChooserModal.tsx`
-*   **Flow:** Currently implements a mock/local authentication session.
-*   **Logic:** When "logged in", the session state (`authSession`, `userProfile`) is updated in `localStorage`. `App.tsx` reads this on boot to determine if the user is authenticated.
+*   **Flow:** Firebase native auth (`signInWithPopup` Google provider in `AuthView.tsx`). The resulting ID token is stored in `localStorage` under `authToken` and sent as a `Bearer` header on protected `/v1/...` API calls.
+*   **Logic:** Protected API routes on the backend verify the token via `firebase-admin` (`verifyFirebaseToken` middleware). `ProfileView.tsx` sends the token manually; converter/compressor/zip downloads use the shared `services/authFetch.ts` helper. When no Firebase config is present, the backend boots but auth verification is unavailable (401/500 on protected routes).
 
 ### F. History & Dashboard
 *   **Components:** `DashboardView.tsx`, `HistoryView.tsx`
@@ -96,7 +96,7 @@ The project utilizes two distinct backend processes:
     *   The frontend runs on a Vite dev server (usually port 5173).
     *   It communicates with TWO concurrent backend services:
         *   **Fastify API (Port 8080):** Handles heavy document conversions and authentication (`backend/src/index.api.ts`).
-        *   **Express Torrent Server (Port 3002):** Handles WebTorrent swarms and streaming (`torrent-server.js`).
+        *   **Express Torrent Server (Port 3002):** Handles WebTorrent swarms and streaming (`streamtor/server.ts`).
     *   API calls from the frontend are either proxy-routed via `vite.config.ts` (e.g., `/api/torrents` routes to 3002) or called directly using absolute URLs.
 
 5.  **Extensibility:**
@@ -107,8 +107,8 @@ The project utilizes two distinct backend processes:
 ## 4. Current State & Immediate Next Steps
 * - [x] **Phase 1: Secrets & Configuration** (Backend config strict validation with Zod, dotenv on all entrypoints).
 * - [x] **Phase 2: Authentication & Authorization** (Migrated to Firebase Native Auth; deleted custom OTP/JWT routes).
-* - [x] **Phase 3: Data Layer Migration** (Settings, Stats, History migrated from localStorage to Firestore for cross-device sync).
+* - [x] **Phase 3: Data Layer Migration** (Settings, Stats, History remain in `localStorage` via `StorageManager`; no Firestore dependency exists in the codebase).
 *   **Aesthetics:** The UI is built with a strong focus on modern aesthetics (animations, glass effects, custom theming).
 *   **Architecture Split:** The Torrent streaming backend (Express on 3002) and Document Conversion backend (Fastify on 8080) are fully functional.
 *   **Security & Config (Production Ready):** Environment configuration is hardened. Both backends enforce strict synchronous validation of required `.env` variables at boot time and will fail fast if misconfigured.
-*   **Storage:** `StorageManager` continues to provide a fast, synchronous cache via `localStorage`, but is now backed by a real-time Firestore sync (`onSnapshot`). User metadata (history, settings, stats) persists natively across devices.
+*   **Storage:** `StorageManager` provides a fast, synchronous cache via `localStorage` and is the single source of truth for persistent frontend state (settings, history, stats). Firebase is used for authentication only.
