@@ -19,11 +19,13 @@ try {
     console.warn('[Email] ⚠️ Could not set DNS to IPv4-first (older Node?)');
 }
 
-// Build transporter — always use port 587 + STARTTLS for maximum compatibility
+// Build transporter — use the configured SMTP port.
+// Port 465 typically implies implicit TLS (secure), 587 implies STARTTLS.
+const smtpPort = env.SMTP_PORT || 587;
 const transporter = nodemailer.createTransport({
     host: env.SMTP_HOST,
-    port: 587,
-    secure: false, // STARTTLS — upgrades to TLS after connecting
+    port: smtpPort,
+    secure: smtpPort === 465, // STARTTLS on 587/2525, implicit TLS on 465
     auth: {
         user: env.SMTP_USER.trim(),
         pass: env.SMTP_PASS.trim(),
@@ -42,7 +44,7 @@ const transporter = nodemailer.createTransport({
 
 // Verify on startup (non-blocking — just logs)
 transporter.verify()
-    .then(() => console.log('[Email] ✅ SMTP verified successfully (user:', env.SMTP_USER, ', host:', env.SMTP_HOST, ':587)'))
+    .then(() => console.log(`[Email] ✅ SMTP verified successfully (user: ${env.SMTP_USER}, host: ${env.SMTP_HOST}:${smtpPort})`))
     .catch((err: Error) => console.error('[Email] ❌ SMTP verification FAILED:', err.message, '— emails will NOT send'));
 
 /**

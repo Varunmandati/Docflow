@@ -24,8 +24,8 @@ END
 $$;
 
 -- Restrict connection to docflow database only
-GRANT CONNECT ON DATABASE docflow TO docflow_api;
-GRANT CONNECT ON DATABASE docflow TO docflow_worker;
+GRANT CONNECT ON DATABASE neondb TO docflow_api;
+GRANT CONNECT ON DATABASE neondb TO docflow_worker;
 
 -- Revoke public schema defaults
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
@@ -278,3 +278,5 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO docflow_api;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO docflow_worker;
 
 COMMIT;
+
+

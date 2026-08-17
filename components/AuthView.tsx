@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup, signInWithCustomToken } from 'firebase/auth';
 import { CloseIcon, SpinnerIcon } from './Icons';
 import { firebaseAuth, isFirebaseConfigured } from '../firebase';
 import { useToast } from '../hooks/useToast';
@@ -19,8 +19,8 @@ interface AuthViewProps {
 	onAuthSuccess: (payload: AuthSuccessPayload) => void;
 }
 
-const OTP_REQUEST_ENDPOINTS = ['/auth/otp/request', '/auth/request-otp', '/otp/request'];
-const OTP_VERIFY_ENDPOINTS = ['/auth/otp/verify', '/auth/verify-otp', '/otp/verify'];
+const OTP_REQUEST_ENDPOINTS = ['/v1/auth/otp/request'];
+const OTP_VERIFY_ENDPOINTS = ['/v1/auth/otp/verify'];
 
 const getApiBase = () => (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
@@ -62,12 +62,14 @@ const AuthView: React.FC<AuthViewProps> = ({ isOpen, onClose, onAuthSuccess }) =
 
 	const callOtpApi = async (paths: string[], payload: Record<string, string>) => {
 		let lastMessage = 'Unable to reach authentication API.';
-		const strippedApiBase = apiBase.endsWith('/api') ? apiBase.slice(0, -4) : apiBase;
+		// The backend is served under /v1/... (proxied by the dev server). Strip
+		// any trailing /api prefix so we never hit the SPA fallback by accident.
+		const strippedApiBase = apiBase.replace(/\/api\/?$/, '');
 
 		for (const path of paths) {
 			const candidateUrls = [
-				`${apiBase}${path}`,
-				...(strippedApiBase !== apiBase ? [`${strippedApiBase}${path}`] : []),
+				`${strippedApiBase}${path}`,
+				...(apiBase !== strippedApiBase ? [`${apiBase}${path}`] : []),
 			];
 
 			for (const url of candidateUrls) {
@@ -86,7 +88,7 @@ const AuthView: React.FC<AuthViewProps> = ({ isOpen, onClose, onAuthSuccess }) =
 							? data.success
 							: typeof data?.ok === 'boolean'
 								? data.ok
-								: response.ok;
+								: false;
 
 					if (response.ok && statusFlag) {
 						return data;
@@ -96,7 +98,17 @@ const AuthView: React.FC<AuthViewProps> = ({ isOpen, onClose, onAuthSuccess }) =
 						data?.message ||
 						data?.error ||
 						`Authentication failed on ${url}.`;
+
+					// If the backend responded with a real JSON error, stop probing
+					// fallback URLs — otherwise the SPA fallback overwrites the
+					// genuine backend message and hides the root cause.
+					if (typeof data?.message === 'string' || typeof data?.error === 'string') {
+						throw new Error(lastMessage);
+					}
 				} catch (err) {
+					if (err instanceof Error && err.message !== 'Unable to connect to the authentication service.') {
+						throw err;
+					}
 					lastMessage = 'Unable to connect to the authentication service.';
 				}
 			}
@@ -169,8 +181,26 @@ const AuthView: React.FC<AuthViewProps> = ({ isOpen, onClose, onAuthSuccess }) =
 			const user = data?.user || data?.data?.user || {};
 			const token = data?.token || data?.data?.token;
 
+			// Persist the backend custom token as well, so the ID token can be
+			// re-exchanged later when it expires (localStorage survives reloads).
 			if (token) {
-				localStorage.setItem('authToken', token);
+				localStorage.setItem('customToken', token);
+			}
+
+			let storedToken = token;
+			if (token && firebaseAuth) {
+				try {
+					// The backend mints a Firebase custom token; exchange it for a
+					// real ID token (what verifyFirebaseToken expects) and store that.
+					const creds = await signInWithCustomToken(firebaseAuth, token);
+					storedToken = await creds.user.getIdToken();
+				} catch (exchangeErr) {
+					console.error('Custom token exchange failed, using raw token:', exchangeErr);
+				}
+			}
+
+			if (storedToken) {
+				localStorage.setItem('authToken', storedToken);
 			}
 
 			onAuthSuccess({
@@ -203,6 +233,13 @@ const AuthView: React.FC<AuthViewProps> = ({ isOpen, onClose, onAuthSuccess }) =
 			const provider = new GoogleAuthProvider();
 			provider.setCustomParameters({ prompt: 'select_account' });
 			const result = await signInWithPopup(firebaseAuth, provider);
+
+			// Persist the Firebase ID token so protected /v1/* API calls
+			// (authFetch) send a valid Authorization header.
+			const idToken = await result.user.getIdToken();
+			if (idToken) {
+				localStorage.setItem('authToken', idToken);
+			}
 
 			onAuthSuccess({
 				name: result.user.displayName || result.user.email?.split('@')[0] || 'User',

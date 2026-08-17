@@ -185,6 +185,7 @@ const FileList: React.FC<FileListProps> = ({ files, onClear, onRemove, onManage,
                                     <option value="jpg">JPG</option>
                                     <option value="png">PNG</option>
                                     <option value="webp">WEBP</option>
+                                    <option value="docx">DOCX</option>
                                 </select>
                             </div>
                         </div>

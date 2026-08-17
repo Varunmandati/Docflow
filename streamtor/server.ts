@@ -3,26 +3,106 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import WebTorrent from 'webtorrent';
+import 'dotenv/config';
 
 const client = new WebTorrent({
-  maxConns: 15,
-  utp: false
+  maxConns: 500,
+  maxWebConns: 30,
+  // uTP adds ~4x throughput penalty over TCP (its congestion control is
+  // extremely conservative), measured ~0.3 MB/s vs ~1.2 MB/s on a well-seeded
+  // torrent with identical peers. TCP is universally supported by seeders,
+  // so disabling uTP gets real multi-MB/s downloads.
+  utp: false,
+  dht: true,
+  tracker: true,
+  downloadLimit: -1,
+  uploadLimit: -1
 } as any);
 
 client.on('error', (err: any) => {
   console.error('Global WebTorrent error:', err);
 });
 
+// Speed measurement. Instead of double-smoothing WebTorrent's own EMA
+// speedometer (which lags real throughput at slow poll rates), measure the
+// actual delta of downloaded/uploaded bytes between polls. That is the real
+// speed the user is getting. A light EMA on top only dampens single-sample
+// jitter so the UI stays readable.
+const speedBaseline = new Map<string, { downloaded: number; uploaded: number; ts: number; down: number; up: number }>();
+const SPEED_SMOOTHING_ALPHA = 0.5;
+
+function measureTorrentSpeed(infoHash: string, downloadedBytes: number, uploadedBytes: number, fallbackDown: number, fallbackUp: number) {
+  const now = Date.now();
+  const prev = speedBaseline.get(infoHash);
+  if (prev && now - prev.ts >= 500) {
+    const dt = (now - prev.ts) / 1000;
+    const deltaDown = Math.max(0, downloadedBytes - prev.downloaded);
+    const deltaUp = Math.max(0, uploadedBytes - prev.uploaded);
+    const measuredDown = dt > 0 ? deltaDown / dt : fallbackDown;
+    const measuredUp = dt > 0 ? deltaUp / dt : fallbackUp;
+    // Light EMA to dampen jitter while still tracking real throughput closely.
+    const down = prev.down + SPEED_SMOOTHING_ALPHA * (measuredDown - prev.down);
+    const up = prev.up + SPEED_SMOOTHING_ALPHA * (measuredUp - prev.up);
+    speedBaseline.set(infoHash, { downloaded: downloadedBytes, uploaded: uploadedBytes, ts: now, down, up });
+    return { down, up };
+  }
+  if (!prev) {
+    speedBaseline.set(infoHash, { downloaded: downloadedBytes, uploaded: uploadedBytes, ts: now, down: fallbackDown, up: fallbackUp });
+    return { down: fallbackDown, up: fallbackUp };
+  }
+  // Poll arrived faster than the measurement window — reuse the last measured
+  // speed instead of WebTorrent's own laggy 5s average. This keeps the
+  // displayed speed stable and truthful between polls.
+  return { down: prev.down, up: prev.up };
+}
+
+function resetSpeedSmoothing(infoHash: string) {
+  speedBaseline.delete(infoHash);
+}
+
+// TTL cache for on-disk progress checks. Without this, every stats poll
+// runs synchronous fs.statSync/fs.existsSync for every file of every torrent,
+// which blocks the Node event loop that is also servicing the actual
+// WebTorrent download traffic, throttling real download speeds.
+const diskCheckCache = new Map<string, { expiresAt: number; exists: boolean; progress: number }>();
+const DISK_CHECK_TTL_MS = 4000;
+
+function checkFileOnDiskCached(torrentName: string, filePath: string, expectedLength: number): { exists: boolean; progress: number } {
+  const key = `${torrentName}\u0000${filePath}\u0000${expectedLength}`;
+  const hit = diskCheckCache.get(key);
+  const now = Date.now();
+  if (hit && hit.expiresAt > now) {
+    return hit;
+  }
+  const result = checkFileOnDisk(torrentName, filePath, expectedLength);
+  diskCheckCache.set(key, { expiresAt: now + DISK_CHECK_TTL_MS, ...result });
+  return result;
+}
+
+// Throttle the per-poll metadata JSON writes (another sync fs.writeFileSync
+// that runs on the event loop every poll). Only persist when progress has
+// moved by a meaningful amount or when enough time has passed.
+const lastMetaWrite = new Map<string, number>();
+const META_WRITE_INTERVAL_MS = 5000;
+
+function shouldWriteMeta(infoHash: string, stats: any): boolean {
+  const last = lastMetaWrite.get(infoHash) || 0;
+  const now = Date.now();
+  if (now - last >= META_WRITE_INTERVAL_MS) {
+    lastMetaWrite.set(infoHash, now);
+    return true;
+  }
+  return false;
+}
+
 const TORRENTS_JSON_PATH = path.join(process.cwd(), '.torrents', 'torrents.json');
 
 const PUBLIC_TRACKERS = [
-  'udp://tracker.opentrackr.org:1337/announce',
-  'udp://tracker.coppersurfer.tk:6969/announce',
-  'udp://tracker.leechers-paradise.org:6969/announce',
-  'udp://open.demonii.com:1337/announce',
-  'udp://tracker.openbittorrent.com:80/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
   'udp://explodie.org:6969/announce',
-  'http://tracker.ipv6tracker.ru:80/announce'
+  'udp://tracker.dler.org:6969/announce'
 ];
 
 function addTrackersToMagnet(magnet: string): string {
@@ -59,6 +139,18 @@ function saveMagnet(magnet: string) {
   }
 }
 
+function getCachedTorrentBuffer(infoHash: string): Buffer | null {
+  try {
+    const torrentFilePath = path.join(process.cwd(), '.torrents', `${infoHash.toLowerCase()}.torrent`);
+    if (fs.existsSync(torrentFilePath)) {
+      return fs.readFileSync(torrentFilePath);
+    }
+  } catch (err) {
+    console.error('Failed to read cached torrent file:', err);
+  }
+  return null;
+}
+
 function saveTorrentFile(torrent: any) {
   try {
     if (!torrent || !torrent.infoHash || !torrent.torrentFile) return;
@@ -86,6 +178,7 @@ function saveTorrentMetadataJson(torrent: any, stats: any) {
     const metaPath = path.join(torrentsDir, `${torrent.infoHash.toLowerCase()}.json`);
     if (stats.ready) {
       fs.writeFileSync(metaPath, JSON.stringify(stats, null, 2), 'utf8');
+      invalidateCachedStats(torrent.infoHash);
       console.log(`Saved torrent metadata JSON cache for ${torrent.infoHash}`);
     }
   } catch (err) {
@@ -93,16 +186,38 @@ function saveTorrentMetadataJson(torrent: any, stats: any) {
   }
 }
 
+// TTL cache for cached-torrent metadata JSON reads. The stats poll reads this
+// file synchronously for every torrent on every request; during a heavy
+// download that disk I/O starves the event loop and the API times out. Serve
+// the last-read copy from memory for a few seconds instead.
+const cachedStatsCache = new Map<string, { expiresAt: number; stats: any }>();
+const CACHED_STATS_TTL_MS = 3000;
+
 function getCachedTorrentStats(infoHash: string) {
   try {
-    const metaPath = path.join(process.cwd(), '.torrents', `${infoHash.toLowerCase()}.json`);
-    if (fs.existsSync(metaPath)) {
-      return JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const key = infoHash.toLowerCase();
+    const now = Date.now();
+    const hit = cachedStatsCache.get(key);
+    if (hit && hit.expiresAt > now) {
+      return hit.stats;
     }
+    const metaPath = path.join(process.cwd(), '.torrents', `${key}.json`);
+    let stats = null;
+    if (fs.existsSync(metaPath)) {
+      stats = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    }
+    cachedStatsCache.set(key, { expiresAt: now + CACHED_STATS_TTL_MS, stats });
+    return stats;
   } catch (err) {
     console.error('Failed to read cached torrent metadata JSON:', err);
   }
   return null;
+}
+
+// Invalidate the TTL cache when we persist fresh stats so subsequent polls
+// pick up the new state immediately instead of stale cached JSON.
+function invalidateCachedStats(infoHash: string) {
+  cachedStatsCache.delete(String(infoHash).toLowerCase());
 }
 
 function checkFileOnDisk(torrentName: string, filePath: string, expectedLength: number): { exists: boolean; progress: number } {
@@ -170,7 +285,9 @@ function loadSavedMagnets() {
           const torrentBuffer = fs.readFileSync(torrentFilePath);
           console.log(`Restoring persistent torrent meta-cache file: ${file}`);
           client.add(torrentBuffer, {
-            path: torrentsDir
+            path: torrentsDir,
+            announce: PUBLIC_TRACKERS,
+            strategy: 'rarest'
           });
           restoredCaches++;
         } catch (e) {
@@ -201,7 +318,8 @@ function loadSavedMagnets() {
           if (!hasCache) {
             console.log('Restoring saved torrent magnet:', trackerMagnet.slice(0, 50));
             client.add(trackerMagnet, { 
-              path: torrentsDir
+              path: torrentsDir,
+              strategy: 'rarest'
             });
           }
         } catch (e) {
@@ -219,13 +337,34 @@ async function startServer() {
   loadSavedMagnets();
 
   const app = express();
-  const PORT = Number(process.env.PORT) || 3002;
+  app.disable('x-powered-by');
+  // Prefer STREAMTOR_PORT: on Fly.io the platform injects PORT=8080 for the
+  // backend's internal_port, and streamtor must stay on its own port (3002)
+  // inside the same container rather than grabbing that injected value.
+  const PORT = Number(process.env.STREAMTOR_PORT) || 3002;
 
-  // Custom CORS/Preflight support
+  // Internal shared-secret. When set, every /api/* route requires it via the
+  // X-Internal-Token header (or the HttpOnly streamtor_token cookie issued to
+  // the same-origin UI below). Leave unset only for local dev.
+  const internalToken = process.env.STREAMTOR_INTERNAL_TOKEN || '';
+  if (!internalToken) {
+    console.warn('[security] STREAMTOR_INTERNAL_TOKEN is not set — torrent API is NOT authenticated. Set it before exposing beyond localhost.');
+  }
+
+  // Custom CORS/Preflight support. Restrict to the configured allowlist instead
+  // of '*'; defaults to the local frontend origins. API auth uses the internal
+  // token header (not cookies), so credentials stay false.
+  const corsOrigins = (process.env.STREAMTOR_CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
   app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    const origin = req.headers.origin;
+    if (origin && corsOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Internal-Token');
+    }
     if (req.method === 'OPTIONS') {
       return res.sendStatus(200);
     }
@@ -234,6 +373,30 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
 
+  // Gate every /api/* route on the internal token (header or same-origin cookie).
+  app.use('/api', (req, res, next) => {
+    if (!internalToken) {
+      return next();
+    }
+    const headerToken = String(req.headers['x-internal-token'] || '');
+    const cookieToken = (req.headers.cookie || '').split(';').map((c) => c.trim()).find((c) => c.startsWith('streamtor_token='));
+    const cookieValue = cookieToken ? cookieToken.slice('streamtor_token='.length) : '';
+    if (headerToken === internalToken || cookieValue === internalToken) {
+      return next();
+    }
+    return res.status(401).json({ error: 'Unauthorized. Missing or invalid internal token.' });
+  });
+
+  // Same-origin UI: issue an HttpOnly cookie so its /api calls authenticate
+  // without the secret ever reaching client-side JS. Only set when the token
+  // is configured.
+  app.use((req, res, next) => {
+    if (internalToken && req.path === '/' && req.method === 'GET') {
+      res.setHeader('Set-Cookie', `streamtor_token=${internalToken}; Path=/; HttpOnly; SameSite=Lax`);
+    }
+    next();
+  });
+
   // API to add a torrent and get its metadata
   app.post('/api/torrents', async (req, res) => {
     const { magnet } = req.body;
@@ -241,17 +404,29 @@ async function startServer() {
       return res.status(400).json({ error: 'Magnet link required' });
     }
 
-    let torrentId: string | Buffer = magnet;
-    if (typeof magnet === 'string' && magnet.startsWith('data:')) {
-      try {
-        const base64Data = magnet.split(',')[1];
-        if (base64Data) {
-          torrentId = Buffer.from(base64Data, 'base64');
+    // If we already have the full .torrent metadata cached (from a prior
+      // session), use that instead of the magnet so metadata is instant and
+      // the download resumes without a cold DHT/metadata bootstrap.
+      let torrentId: string | Buffer = magnet;
+      if (typeof magnet === 'string' && magnet.startsWith('magnet:')) {
+        const infoHashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/);
+        const cachedBh = infoHashMatch ? infoHashMatch[1].toLowerCase() : '';
+        const cachedBuf = cachedBh ? getCachedTorrentBuffer(cachedBh) : null;
+        if (cachedBuf) {
+          torrentId = cachedBuf;
+        } else {
+          torrentId = addTrackersToMagnet(magnet);
         }
-      } catch (err) {
-        return res.status(400).json({ error: 'Invalid base64 torrent data' });
+      } else if (typeof magnet === 'string' && magnet.startsWith('data:')) {
+        try {
+          const base64Data = magnet.split(',')[1];
+          if (base64Data) {
+            torrentId = Buffer.from(base64Data, 'base64');
+          }
+        } catch (err) {
+          return res.status(400).json({ error: 'Invalid base64 torrent data' });
+        }
       }
-    }
 
     try {
       let torrent: any = null;
@@ -272,7 +447,9 @@ async function startServer() {
       if (!torrent) {
         try {
           torrent = client.add(torrentId, { 
-            path: path.join(process.cwd(), '.torrents')
+            path: path.join(process.cwd(), '.torrents'),
+            announce: PUBLIC_TRACKERS,
+            strategy: 'rarest'
           });
         } catch (addErr: any) {
           // If duplicate error, safely retrieve the existing torrent from client
@@ -301,10 +478,23 @@ async function startServer() {
 
       torrent.on('ready', () => {
         saveTorrentFile(torrent);
-        if (!res.headersSent) {
-          res.json(getTorrentStats(torrent));
-        }
       });
+      torrent.on('done', () => {
+        saveTorrentFile(torrent);
+      });
+
+      // Respond immediately (metadata still fetching) so the client sees the
+      // torrent in Active Downloads right away instead of a long hang.
+      try {
+        const stats = getTorrentStats(torrent);
+        if (!res.headersSent) {
+          res.json(stats);
+        }
+      } catch (e) {
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to compile torrent stats' });
+        }
+      }
       
       torrent.on('error', async (err: any) => {
         if (res.headersSent) return;
@@ -362,10 +552,9 @@ async function startServer() {
             const live = liveStatsMap.get(h);
             if (live) {
               if (live.ready) {
-                const metaPath = path.join(torrentsDir, file);
-                try {
-                  fs.writeFileSync(metaPath, JSON.stringify(live, null, 2), 'utf8');
-                } catch (e) {}
+                // Metadata JSON is persisted by getTorrentStats via a throttled
+                // writer; writing it again here on every poll would add needless
+                // synchronous fs I/O to the event loop.
                 allStats.push(live);
               } else {
                 const cached = getCachedTorrentStats(h);
@@ -426,15 +615,88 @@ async function startServer() {
         torrent = null;
       }
 
+      const torrentsDir = path.join(process.cwd(), '.torrents');
+
+      // Torrent is not live in the client, but may still have cached metadata
+      // from a previous session (survived a cleanup wipe). Handle those here so
+      // pause / resume / remove never hard-404 from stale UI entries.
       if (!torrent) {
-        return res.status(404).json({ error: `Torrent not found: ${infoHash}` });
+        if (action === 'remove') {
+          // Remove cached-only torrents regardless of live client state.
+          try {
+            const metaPath = path.join(torrentsDir, `${h}.json`);
+            if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+            const torrentFilePath = path.join(torrentsDir, `${h}.torrent`);
+            if (fs.existsSync(torrentFilePath)) fs.unlinkSync(torrentFilePath);
+            // Delete any partially/fully downloaded data files listed in the
+            // cached metadata so a "remove" frees disk space like live removes.
+            try {
+              const cached = getCachedTorrentStats(h);
+              if (cached && cached.files && Array.isArray(cached.files)) {
+                cached.files.forEach((f: any) => {
+                  const name = f.name || f.path || '';
+                  if (!name) return;
+                  const base = path.basename(name);
+                  const candidates = [path.join(torrentsDir, base), path.join(torrentsDir, name)];
+                  candidates.forEach((p) => {
+                    try {
+                      if (fs.existsSync(p)) {
+                        fs.unlinkSync(p);
+                        console.log(`Removed cached data file: ${base}`);
+                      }
+                    } catch (e) {}
+                  });
+                });
+              }
+            } catch (e) {
+              // non-fatal
+            }
+            if (fs.existsSync(TORRENTS_JSON_PATH)) {
+              const saved = JSON.parse(fs.readFileSync(TORRENTS_JSON_PATH, 'utf8')) as string[];
+              fs.writeFileSync(TORRENTS_JSON_PATH, JSON.stringify(saved.filter((m) => !m.includes(h)), null, 2), 'utf8');
+            }
+          } catch (err) {
+            console.error('Failed to clean cached-only torrent on remove:', err);
+          }
+          console.log(`Removed cached-only torrent ${h}`);
+          return res.json({ infoHash: h, removed: true, cachedOnly: true });
+        }
+
+        if (action === 'resume') {
+          // Torrent is no longer in the client (e.g. cleared from memory but its
+          // .torrent meta-cache survived). Re-add it instantly so the download
+          // resumes without waiting on a cold DHT/metadata bootstrap.
+          const torrentBuffer = getCachedTorrentBuffer(h);
+          if (torrentBuffer) {
+            console.log(`Resuming cached-only torrent ${h} from torrent meta-cache`);
+            torrent = await client.add(torrentBuffer, { path: torrentsDir, announce: PUBLIC_TRACKERS, strategy: 'rarest' });
+          } else if (fs.existsSync(TORRENTS_JSON_PATH)) {
+            const saved = JSON.parse(fs.readFileSync(TORRENTS_JSON_PATH, 'utf8')) as string[];
+            const magnet = saved.find((m) => m.toLowerCase().includes(h));
+            if (magnet) {
+              console.log(`Resuming cached-only torrent ${h} from saved magnet`);
+              torrent = await client.add(addTrackersToMagnet(magnet), { path: torrentsDir, strategy: 'rarest' });
+            }
+          }
+          if (!torrent) {
+            const cached = getCachedTorrentStats(h);
+            if (cached && cached.ready) {
+              console.log(`No recoverable source for cached-only torrent ${h}`);
+            }
+            return res.status(404).json({ error: `No recoverable torrent metadata for ${infoHash}` });
+          }
+        } else {
+          return res.status(404).json({ error: `Torrent not found: ${infoHash}` });
+        }
       }
 
       switch (action) {
         case 'pause':
+          resetSpeedSmoothing(h);
           torrent.pause();
           break;
         case 'resume':
+          resetSpeedSmoothing(h);
           torrent.resume();
           break;
         case 'remove': {
@@ -487,23 +749,25 @@ async function startServer() {
         });
       }
 
-      // Remove all meta caches (json + torrent files) except torrents.json list
+      // Remove stats JSON + downloaded data caches, but KEEP the compact
+      // `.torrent` metadata files and the saved magnet list. That way a
+      // re-add of the same file restores its full metadata instantly and
+      // resumes at once instead of bootstrapping metadata from peers anew.
       const torrentsDir = path.join(process.cwd(), '.torrents');
       if (fs.existsSync(torrentsDir)) {
         const files = fs.readdirSync(torrentsDir);
         files.forEach(file => {
           if (file.toLowerCase().endsWith('.json') && file.toLowerCase() !== 'torrents.json') {
-            fs.unlinkSync(path.join(torrentsDir, file));
-          }
-          if (file.toLowerCase().endsWith('.torrent')) {
-            fs.unlinkSync(path.join(torrentsDir, file));
+            const p = path.join(torrentsDir, file);
+            const h = file.slice(0, -5).toLowerCase();
+            const metaPath = path.join(torrentsDir, `${h}.torrent`);
+            // Leave torrents that still have a .torrent meta cache on the
+            // saved-magnets list so they can be re-added instantly later.
+            if (!fs.existsSync(metaPath)) {
+              fs.unlinkSync(p);
+            }
           }
         });
-        // Reset the saved magnet list
-        const torrentsJson = path.join(torrentsDir, 'torrents.json');
-        if (fs.existsSync(torrentsJson)) {
-          fs.writeFileSync(torrentsJson, '[]', 'utf8');
-        }
       }
 
       res.json({ deleted: removed });
@@ -651,8 +915,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  app.listen(PORT, '127.0.0.1', () => {
+    console.log(`Server running on http://127.0.0.1:${PORT}`);
   });
 }
 
@@ -679,16 +943,26 @@ function getTorrentStats(t: WebTorrent.Torrent) {
       const filePath = f.path || f.name || (cachedFile ? (cachedFile.path || cachedFile.name) : '');
       const fileName = f.name || (cachedFile ? cachedFile.name : 'Unknown');
 
-      const disk = checkFileOnDisk(t.name || (cached ? cached.name : ''), filePath, sizeExpected);
+      // Live torrents track progress/downloaded in memory, which is both
+      // non-blocking and accurate. Only fall back to the disk check (with a
+      // TTL cache) for torrents restored from metadata caches.
       let progress = 0;
       let downloaded = 0;
 
-      if (disk.exists) {
-        progress = disk.progress;
-        downloaded = Math.floor(disk.progress * sizeExpected);
+      const memProgress = typeof f.progress === 'number' && f.progress > 0 ? f.progress : 0;
+      if (memProgress > 0) {
+        progress = memProgress;
+        downloaded = Math.floor(memProgress * sizeExpected);
       } else {
-        progress = f.progress || 0;
-        downloaded = f.downloaded || 0;
+        const disk = checkFileOnDiskCached(t.name || (cached ? cached.name : ''), filePath, sizeExpected);
+        if (disk.exists) {
+          progress = disk.progress;
+          downloaded = Math.floor(disk.progress * sizeExpected);
+        } else {
+          const memDownloaded = typeof f.downloaded === 'number' && f.downloaded > 0 ? f.downloaded : 0;
+          progress = memDownloaded > 0 ? (sizeExpected > 0 ? Math.min(memDownloaded / sizeExpected, 1) : 0) : 0;
+          downloaded = memDownloaded;
+        }
       }
 
       totalDownloaded += downloaded;
@@ -706,24 +980,35 @@ function getTorrentStats(t: WebTorrent.Torrent) {
     const overallProgress = totalLength > 0 ? (totalDownloaded / totalLength) : t.progress;
     const isDone = overallProgress >= 1.0 || t.done;
 
+    // Measure real throughput from the delta of bytes actually downloaded
+    // between polls (matches the speed the user is really getting), falling
+    // back to WebTorrent's own speedometer for the very first sample.
+    const measured = measureTorrentSpeed(
+      infoHash,
+      isDone ? totalDownloaded : (t.downloaded || totalDownloaded),
+      isDone ? (t.uploaded || 0) : (t.uploaded || 0),
+      isDone ? 0 : (t.downloadSpeed || 0),
+      isDone ? 0 : (t.uploadSpeed || 0)
+    );
+
     const stats = {
       infoHash: t.infoHash || '',
       name: name,
       paused: !!(t as any).paused,
       progress: overallProgress,
-      downloadSpeed: isDone ? 0 : t.downloadSpeed,
-      uploadSpeed: isDone ? 0 : t.uploadSpeed,
+      downloadSpeed: measured.down,
+      uploadSpeed: measured.up,
       numPeers: t.numPeers || 0,
       length: totalLength,
       downloaded: totalDownloaded,
-      timeRemaining: isDone ? 0 : (t.timeRemaining || 0),
+      timeRemaining: isDone ? 0 : (typeof t.timeRemaining === 'number' && Number.isFinite(t.timeRemaining) ? t.timeRemaining : 0),
       done: isDone,
       ready: isReady || (processedFiles.length > 0),
       files: processedFiles
     };
 
     // If the torrent just achieved ready status in memory, cache its metadata json
-    if (isReady && t.files && t.files.length > 0) {
+    if (isReady && t.files && t.files.length > 0 && shouldWriteMeta(infoHash, stats)) {
       saveTorrentMetadataJson(t, stats);
     }
 

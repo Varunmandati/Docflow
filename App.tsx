@@ -13,8 +13,11 @@ import AuthView from './components/AuthView';
 import MobileHeader from './components/MobileHeader';
 import AnimatedBackground from './components/AnimatedBackground';
 import { ToastProvider } from './components/ToastProvider';
+import { signOut } from 'firebase/auth';
+import { firebaseAuth } from './firebase';
 import { translations } from './translations';
 import { HistoryEntry, ConversionSettings, UserProfile } from './types';
+import { authFetch } from './services/authFetch';
 
 export type Page = 'dashboard' | 'upload' | 'compress' | 'torrent' | 'extract' | 'history' | 'settings' | 'profile';
 export type Theme = 'light' | 'dark' | 'system';
@@ -109,8 +112,10 @@ const App: React.FC = () => {
             
             // Use requestAnimationFrame to ensure smooth transition
             requestAnimationFrame(() => {
-                // Add transition class
+                // Add transition class first, then force a reflow so the browser
+                // registers the transition duration BEFORE the theme colors change
                 root.classList.add('theme-transitioning');
+                void root.offsetHeight;
                 
                 // Apply theme immediately
                 root.classList.toggle('dark', isDark);
@@ -249,6 +254,27 @@ const App: React.FC = () => {
     const handleSaveProfile = (newProfile: UserProfile) => {
         setUserProfile(newProfile);
     };
+
+    const handleLogout = () => {
+        // Clear persisted auth so protected /v1/* calls stop carrying a token.
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('customToken');
+        localStorage.removeItem('authSession');
+        localStorage.removeItem('authProvider');
+        localStorage.removeItem('userProfile');
+        setIsAuthenticated(false);
+        setUserProfile(defaultUserProfile);
+        setActivePage('dashboard');
+
+        // Sign out of Firebase (Google auth) so the next login prompts again.
+        if (firebaseAuth) {
+            signOut(firebaseAuth).catch(() => {});
+        }
+
+        // Immediately show the login/signup modal so the user is asked to
+        // authenticate instead of being left on a mock profile.
+        setIsAuthModalOpen(true);
+    };
     
     const handleToggleSidebar = () => {
         setIsSidebarCollapsed(prev => !prev);
@@ -265,6 +291,35 @@ const App: React.FC = () => {
         localStorage.setItem('authSession', 'true');
         localStorage.setItem('authProvider', payload.provider);
     };
+
+    // Sync the local profile with the authoritative email/name stored in the
+    // backend. Without this, a stale localStorage email breaks flows that must
+    // match the account email exactly (e.g. change-email "oldEmail" check).
+    useEffect(() => {
+        if (!isAuthenticated) return;
+
+        let cancelled = false;
+        const syncProfile = async () => {
+            try {
+                const response = await authFetch('/v1/profile');
+                if (!response.ok) return;
+                const data = await response.json();
+                if (cancelled || !data?.success || !data.profile) return;
+                const p = data.profile;
+                if (p.email) {
+                    setUserProfile(prev => ({
+                        name: p.name || prev.name,
+                        email: p.email,
+                        avatarUrl: p.avatarUrl || prev.avatarUrl,
+                    }));
+                }
+            } catch {
+                // Ignore transient failures; the local profile remains usable.
+            }
+        };
+        syncProfile();
+        return () => { cancelled = true; };
+    }, [isAuthenticated]);
     
     const isGlassEffect = settings.backgroundAnimation && (settings.theme === 'dark' || (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches));
 
@@ -288,7 +343,7 @@ const App: React.FC = () => {
                         <MobileHeader onMenuClick={() => setIsMobileSidebarOpen(true)} />
                         <main>
                             <div className="w-full md:pt-0 pt-16">
-                                <div style={{ display: activePage === 'dashboard' ? 'block' : 'none' }}>
+                                <div className="page-fade-in" style={{ display: activePage === 'dashboard' ? 'block' : 'none' }}>
                                     <DashboardView
                                         onQuickConvert={handleQuickConvertToUpload}
                                         onQuickCompress={handleQuickCompressToUpload}
@@ -304,13 +359,13 @@ const App: React.FC = () => {
                                         onNavigateToHistory={handleNavigateToHistory}
                                     />
                                 </div>
-                                 <div style={{ display: activePage === 'compress' ? 'block' : 'none' }}>
+                                 <div className="page-fade-in" style={{ display: activePage === 'compress' ? 'block' : 'none' }}>
                                     <CompressorView 
                                         initialFiles={initialCompressFiles}
                                         t={t.compressor}
                                     />
                                 </div>
-                                <div style={{ display: activePage === 'upload' ? 'block' : 'none' }}>
+                                <div className="page-fade-in" style={{ display: activePage === 'upload' ? 'block' : 'none' }}>
                                     <ConverterView 
                                         initialFiles={initialFiles} 
                                         onConversionComplete={handleUpdateStats} 
@@ -320,13 +375,13 @@ const App: React.FC = () => {
                                         t={t.converter}
                                     />
                                 </div>
-                                <div style={{ display: activePage === 'torrent' ? 'block' : 'none' }}>
+                                <div className="page-fade-in" style={{ display: activePage === 'torrent' ? 'block' : 'none' }}>
                                     <TorrentConverterView />
                                 </div>
-                                <div style={{ display: activePage === 'extract' ? 'block' : 'none' }}>
+                                <div className="page-fade-in" style={{ display: activePage === 'extract' ? 'block' : 'none' }}>
                                     <ImageExtractorView />
                                 </div>
-                                <div style={{ display: activePage === 'history' ? 'block' : 'none' }}>
+                                <div className="page-fade-in" style={{ display: activePage === 'history' ? 'block' : 'none' }}>
                                     <HistoryView 
                                         history={history} 
                                         t={t.history}
@@ -337,11 +392,11 @@ const App: React.FC = () => {
                                         })()}
                                     />
                                 </div>
-                                <div style={{ display: activePage === 'settings' ? 'block' : 'none' }}>
+                                <div className="page-fade-in" style={{ display: activePage === 'settings' ? 'block' : 'none' }}>
                                     <SettingsView settings={settings} onSave={handleSaveSettings} t={t.settings}/>
                                 </div>
-                                <div style={{ display: activePage === 'profile' ? 'block' : 'none' }}>
-                                    <ProfileView userProfile={userProfile} onSave={handleSaveProfile} t={t.profile}/>
+                                <div className="page-fade-in" style={{ display: activePage === 'profile' ? 'block' : 'none' }}>
+                                    <ProfileView userProfile={userProfile} onSave={handleSaveProfile} onLogout={handleLogout} t={t.profile}/>
                                 </div>
                             </div>
                         </main>

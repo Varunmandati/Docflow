@@ -72,7 +72,7 @@ describe('File Validation Service', () => {
         it('rejects a .torrent with a bad declared mime type', async () => {
             const bencoded = Buffer.from('d8:announce42:udp://tracker.opentrackr.org:1337/announce4:name4:demo1');
             const filePath = await writeFixture('demo.torrent', bencoded);
-            const result = await validateFile(filePath, 'application/zip', 'demo.torrent');
+            const result = await validateFile(filePath, 'application/json', 'demo.torrent');
             expect(result.valid).toBe(false);
             expect(result.error).toContain('MIME type not allowed');
         });

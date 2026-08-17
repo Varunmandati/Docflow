@@ -1,15 +1,17 @@
 import path from 'path';
 import fs from 'fs/promises';
-import sharp from 'sharp';
+import sharp, { FormatEnum } from 'sharp';
 import { ConverterEngine, EngineConversionResult, EngineOptions } from './ConverterEngine.js';
 import { logger } from '../../config/logger.js';
+
+type SharpFormat = keyof FormatEnum;
 
 export class SharpEngine implements ConverterEngine {
     name = 'Sharp';
 
-    // Raster image formats supported by Sharp
+    // Raster image formats supported by Sharp (svg is rasterized on input via librsvg)
     private supportedFormats = new Set([
-        'png', 'jpg', 'jpeg', 'webp', 'gif', 'tiff', 'heic', 'heif', 'avif'
+        'png', 'jpg', 'jpeg', 'webp', 'gif', 'tiff', 'heic', 'heif', 'avif', 'svg'
     ]);
 
     canHandle(sourceFormat: string, targetFormat: string): boolean {
@@ -30,8 +32,8 @@ export class SharpEngine implements ConverterEngine {
         const expectedOutputPath = path.join(outputDir, `${baseName}.${targetFormat}`);
 
         // Normalize target format for Sharp
-        let sharpFormat: keyof sharp.FormatEnum = targetFormat as keyof sharp.FormatEnum;
-        if (sharpFormat === 'jpg') sharpFormat = 'jpeg';
+        const normalized = targetFormat === 'jpg' ? 'jpeg' : targetFormat;
+        const sharpFormat = normalized as SharpFormat;
 
         try {
             let pipeline = sharp(inputPath, { animated: sourceFormat === 'gif' || sourceFormat === 'webp' });

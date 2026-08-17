@@ -98,6 +98,7 @@ export interface ConverterTranslation {
         merge: {
             pdf: string;
             zip: string;
+            docx: string;
         };
         convertButton: string;
         convertButtonLoading: string;
@@ -254,7 +255,8 @@ export const translations: { [key: string]: Translation } = {
             options: {
                 merge: {
                     pdf: 'Merge into single PDF',
-                    zip: 'Combine into ZIP archive'
+                    zip: 'Combine into ZIP archive',
+                    docx: 'Merge into single DOCX'
                 },
                 convertButton: 'Process',
                 convertButtonLoading: 'Processing...',
@@ -438,7 +440,8 @@ export const translations: { [key: string]: Translation } = {
             options: {
                 merge: {
                     pdf: 'एक PDF में मिलाएं',
-                    zip: 'ZIP संग्रह में मिलाएं'
+                    zip: 'ZIP संग्रह में मिलाएं',
+                    docx: 'एक DOCX में मिलाएं'
                 },
                 convertButton: 'संसाधित करें',
                 convertButtonLoading: 'संसाधित हो रहा है...',
@@ -622,7 +625,8 @@ export const translations: { [key: string]: Translation } = {
             options: {
                 merge: {
                     pdf: 'একক PDF-এ মার্জ করুন',
-                    zip: 'ZIP আর্কাইভে একত্রিত করুন'
+                    zip: 'ZIP আর্কাইভে একত্রিত করুন',
+                    docx: 'একক DOCX-এ মার্জ করুন'
                 },
                 convertButton: 'প্রসেস করুন',
                 convertButtonLoading: 'প্রসেস করা হচ্ছে...',
@@ -806,7 +810,8 @@ export const translations: { [key: string]: Translation } = {
             options: {
                 merge: {
                     pdf: 'ఒకే PDFలో విలీనం చేయండి',
-                    zip: 'ZIP ఆర్కైవ్‌లో కలపండి'
+                    zip: 'ZIP ఆర్కైవ్‌లో కలపండి',
+                    docx: 'ఒకే DOCXలో విలీనం చేయండి'
                 },
                 convertButton: 'ప్రాసెస్ చేయండి',
                 convertButtonLoading: 'ప్రాసెస్ అవుతోంది...',

@@ -551,7 +551,7 @@ const TorrentConverterView: React.FC = () => {
                         <div className="flex flex-col items-end">
                           <span className="flex items-center gap-1" style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}><Clock size={11} /> ETA</span>
                           <span style={{ color: 'var(--text-primary)' }}>
-                            {torrent.timeRemaining === Infinity || torrent.timeRemaining === 0 
+                            {!torrent.timeRemaining || torrent.timeRemaining <= 0 
                               ? 'Calculating...' 
                               : torrent.timeRemaining > 3600000 
                                 ? `${Math.floor(torrent.timeRemaining / 1000 / 3600)}h ${Math.round((torrent.timeRemaining / 1000 % 3600) / 60)}m`

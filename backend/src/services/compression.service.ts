@@ -10,6 +10,13 @@ import { getFileSize, toRelativeStoragePath } from './storage.service.js';
 
 const imageExt = new Set(['.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp']);
 const archiveExt = new Set(['.zip']);
+const officeExt = new Set(['.docx', '.pptx', '.xlsx']);
+
+// Formats whose re-encoded bytes are always JPEG — the output file must carry
+// a .jpg extension to match the content. WebP is NOT in this set: WebP keeps
+// its native alpha-friendly format. TIFF/BMP are handled per-pixel below so
+// alpha-capable sources stay alpha-preserving.
+const jpegOutputExt = new Set(['.tiff', '.bmp']);
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -26,16 +33,59 @@ const chooseQuality = (job: CompressionJobData, detectedType: string): number =>
     return clamp(job.options.quality ?? 78, 30, 95);
 };
 
+/**
+ * Decide the output extension for an image source, preserving alpha.
+ * - PNG / WebP keep their native (alpha-safe) formats.
+ * - JPEG stays JPEG (no alpha anyway).
+ * - TIFF / BMP carry a JPEG only when the source has NO alpha; when it does,
+ *   they are emitted as PNG so transparency / stickers survive.
+ */
+async function determineImageOutputExt(blobOrPath: Buffer | string, ext: string): Promise<string> {
+    if (ext === '.png' || ext === '.webp') return ext;
+    if (ext === '.jpg' || ext === '.jpeg') return '.jpg';
+    try {
+        const pipeline = typeof blobOrPath === 'string'
+            ? sharp(blobOrPath, { failOn: 'none' })
+            : sharp(blobOrPath, { failOn: 'none' });
+        const meta = await pipeline.metadata();
+        if (meta.hasAlpha) return '.png';
+    } catch {
+        // Fall through — assume no meaningful alpha and use JPEG.
+    }
+    return '.jpg';
+}
+
+/**
+ * Re-encode image bytes to the requested output extension. The format is
+ * chosen from the OUTPUT extension, never the source, so an alpha-capable
+ * source routed to '.png' stays lossless-and-transparent.
+ */
+async function compressImageBuffer(blob: Buffer, outExt: string, quality: number): Promise<Buffer> {
+    const pipeline = sharp(blob, { failOn: 'none' });
+    if (outExt === '.png') {
+        return pipeline.png({ compressionLevel: 9, quality: clamp(quality, 40, 100) }).toBuffer();
+    }
+    if (outExt === '.webp') {
+        return pipeline.webp({ quality }).toBuffer();
+    }
+    return pipeline.jpeg({ quality: clamp(quality, 35, 92), mozjpeg: true }).toBuffer();
+}
+
 async function compressImage(inputPath: string, outputPath: string, quality: number): Promise<void> {
-    const ext = path.extname(inputPath).toLowerCase();
+    const inExt = path.extname(inputPath).toLowerCase();
+    const outExt = path.extname(outputPath).toLowerCase();
+    // The target-size binary search writes extension-less temp files; use the
+    // source's own decided format in that case so the test bytes match the
+    // final artifact's encoding.
+    const effectiveExt = outExt || await determineImageOutputExt(inputPath, inExt);
     const pipeline = sharp(inputPath, { failOn: 'none' });
 
-    if (ext === '.png') {
+    if (effectiveExt === '.png') {
         await pipeline.png({ compressionLevel: 9, quality: clamp(quality, 40, 100) }).toFile(outputPath);
         return;
     }
 
-    if (ext === '.webp') {
+    if (effectiveExt === '.webp') {
         await pipeline.webp({ quality }).toFile(outputPath);
         return;
     }
@@ -83,8 +133,51 @@ async function compressZip(inputPath: string, outputPath: string, quality: numbe
 
         if (imageExt.has(ext)) {
             const blob = await entry.async('nodebuffer');
-            const transformed = await sharp(blob).jpeg({ quality: clamp(quality, 35, 92), mozjpeg: true }).toBuffer();
-            const nextName = entry.name.replace(/\.(png|jpe?g|webp|bmp|tiff)$/i, '.jpg');
+            // Keep alpha-capable formats (PNG/WebP) native; JPEG only for
+            // opaque sources. This is what keeps stickers/overlays intact.
+            const outExt = await determineImageOutputExt(blob, ext);
+            const transformed = await compressImageBuffer(blob, outExt, quality);
+            const nextName = entry.name.replace(/\.(png|jpe?g|webp|bmp|tiff)$/i, outExt);
+            outZip.file(nextName, transformed);
+        } else {
+            outZip.file(entry.name, await entry.async('nodebuffer'));
+        }
+    }
+
+    const outputBuffer = await outZip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 },
+    });
+
+    await fs.writeFile(outputPath, outputBuffer);
+}
+
+/**
+ * Compress DOCX / PPTX / XLSX (OOXML packages are zips). Media entries are
+ * re-encoded *in place* — same entry name, same image format — so the internal
+ * rels/document.xml references continue to resolve. PNG/WebP are kept in their
+ * native alpha-preserving formats; JPEGs are re-encoded with the target
+ * quality; alpha-capable TIFF/BMP are kept transparent (PNG) while opaque ones
+ * become JPEG.
+ */
+async function compressOffice(inputPath: string, outputPath: string, quality: number): Promise<void> {
+    const raw = await fs.readFile(inputPath);
+    const zip = await JSZip.loadAsync(raw);
+    const outZip = new JSZip();
+
+    const entries = Object.values(zip.files);
+    for (const entry of entries) {
+        if (entry.dir) continue;
+        const ext = path.extname(entry.name).toLowerCase();
+
+        if (imageExt.has(ext)) {
+            const blob = await entry.async('nodebuffer');
+            const outExt = await determineImageOutputExt(blob, ext);
+            const transformed = await compressImageBuffer(blob, outExt, quality);
+            const nextName = outExt === ext
+                ? entry.name
+                : entry.name.replace(/\.(png|jpe?g|webp|bmp|tiff)$/i, outExt);
             outZip.file(nextName, transformed);
         } else {
             outZip.file(entry.name, await entry.async('nodebuffer'));
@@ -188,8 +281,17 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
 
     const ext = path.extname(job.inputPath).toLowerCase();
     const base = path.basename(job.inputName, ext) || 'compressed';
-    const outputExt = ext === '.rar' ? '.zip' : ext;
+    const outputExt = ext === '.rar' ? '.zip'
+        : imageExt.has(ext) ? await determineImageOutputExt(job.inputPath, ext)
+        : jpegOutputExt.has(ext) ? '.jpg'
+        : ext;
     const outputPath = path.join(outputDir, `${base}_compressed${outputExt}`);
+
+    // Quality-preserving sibling: re-encode at a high fidelity floor so the
+    // user always receives a near-lossless variant alongside the
+    // criteria-matched file.
+    const qualityOutputPath = path.join(outputDir, `${base}_quality_preserved${outputExt}`);
+    const QUALITY_PRESERVE_QUALITY = 92;
 
     let quality = job.options.lockQuality
         ? clamp(job.options.quality ?? 78, 30, 95)
@@ -204,7 +306,7 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
             fileType = 'image';
         } else if (ext === '.pdf') {
             fileType = 'pdf';
-        } else if (archiveExt.has(ext) || ext === '.rar') {
+        } else if (archiveExt.has(ext) || ext === '.rar' || officeExt.has(ext)) {
             fileType = 'archive';
         }
 
@@ -233,14 +335,33 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
         await compressPdf(job.inputPath, outputPath, quality);
     } else if (archiveExt.has(ext) || ext === '.rar') {
         await compressZip(job.inputPath, outputPath, quality);
+    } else if (officeExt.has(ext)) {
+        await compressOffice(job.inputPath, outputPath, quality);
     } else {
         await fs.copyFile(job.inputPath, outputPath);
     }
 
+    // Quality-preserving variant: same pipeline, high fidelity floor. When the
+    // user already asked for a high-quality result (quality >= floor) the two
+    // files converge — that is expected and both stay downloadable.
+    if (imageExt.has(ext)) {
+        await compressImage(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+    } else if (ext === '.pdf') {
+        await compressPdf(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+    } else if (archiveExt.has(ext) || ext === '.rar') {
+        await compressZip(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+    } else if (officeExt.has(ext)) {
+        await compressOffice(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+    } else {
+        await fs.copyFile(job.inputPath, qualityOutputPath);
+    }
+
     const compressedSize = await getFileSize(outputPath);
+    const qualityOutputSize = await getFileSize(qualityOutputPath);
     const savingsPercent = originalSize > 0 ? Math.max(0, ((originalSize - compressedSize) / originalSize) * 100) : 0;
 
     const relativePath = toRelativeStoragePath(outputPath);
+    const qualityRelativePath = toRelativeStoragePath(qualityOutputPath);
 
     const suggestions = [...inputAnalysis.suggestions];
     if (usedTargetBytes) {
@@ -267,6 +388,11 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
                 relativePath,
                 downloadUrl: `/v1/files/download?path=${encodeURIComponent(relativePath)}`,
                 size: compressedSize,
+            },
+            quality: {
+                relativePath: qualityRelativePath,
+                downloadUrl: `/v1/files/download?path=${encodeURIComponent(qualityRelativePath)}`,
+                size: qualityOutputSize,
             },
         },
         analysis: {

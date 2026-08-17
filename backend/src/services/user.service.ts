@@ -48,21 +48,35 @@ export class UserService {
   /**
    * Upsert a user row keyed by Firebase UID. Idempotent — safe to call
    * on every authenticated request. Returns the persisted user.
+   *
+   * Runs inside the user's RLS context: the users_self_insert policy requires
+   * `id = app.current_user_id`, and user_preferences prefs_self_all requires
+   * the same context, so a context-less `withApiClient` insert is rejected.
    */
   async findOrCreateFirebaseUser(input: CreateUserInput): Promise<User> {
-    return withApiClient(async (client) => {
+    const normalizedEmail = input.email.toLowerCase().trim();
+    return withUserContext(input.id, async (client) => {
+      // If the same email already exists under a different Firebase uid (e.g.
+      // the Firebase account was recreated, or a legacy row predates a uid
+      // change), reconcile first so the INSERT below never collides on
+      // users_email_key. The SECURITY DEFINER function runs as the admin role
+      // and migrates the row + its children to the authoritative uid.
+      await client.query(
+        'SELECT reconcile_firebase_user($1, $2)',
+        [input.id, normalizedEmail]
+      );
+
       const result = await client.query<User>(`
         INSERT INTO users (id, email, display_name, avatar_url, auth_provider, email_verified, last_login_at)
         VALUES ($1, $2, $3, $4, $5, TRUE, NOW())
         ON CONFLICT (id) DO UPDATE SET
-          email            = COALESCE(EXCLUDED.email, users.email),
           display_name     = COALESCE(EXCLUDED.display_name, users.display_name),
           avatar_url       = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
           last_login_at    = NOW()
         RETURNING *
       `, [
         input.id,
-        input.email.toLowerCase().trim(),
+        normalizedEmail,
         input.displayName ?? null,
         input.avatarUrl ?? null,
         input.authProvider ?? 'email',

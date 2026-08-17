@@ -38,6 +38,44 @@ const ALLOWED_MIME_TYPES = new Set([
     'image/tiff',
     'image/x-tiff',
     'image/webp',
+    // Audio MIME types
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/wav',
+    'audio/x-wav',
+    'audio/aac',
+    'audio/aacp',
+    'audio/flac',
+    'audio/ogg',
+    'audio/x-m4a',
+    'audio/mp4',
+    // Video MIME types
+    'video/mp4',
+    'video/quicktime',
+    'video/webm',
+    'video/x-msvideo',
+    'video/x-matroska',
+    // Archive MIME types
+    'application/zip',
+    'application/x-zip-compressed',
+    'application/gzip',
+    'application/x-tar',
+    'application/x-7z-compressed',
+    // Extended document MIME types
+    'text/markdown',
+    'text/x-markdown',
+    'application/epub+zip',
+    'text/html',
+    'text/csv',
+    'text/tab-separated-values',
+    // Extended image MIME types
+    'image/svg+xml',
+    'image/heic',
+    'image/heif',
+    'image/heif-sequence',
+    'image/avif',
+    'image/x-icon',
+    'image/vnd.microsoft.icon',
 ]);
 
 // File magic numbers (signatures) for validation
@@ -68,9 +106,16 @@ const FILE_SIGNATURES: Record<string, Buffer[]> = {
 
 const ALLOWED_EXTENSIONS = new Set([
     '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx',
-    '.odt', '.odp', '.ods', '.rtf', '.txt', '.pdf', '.torrent',
+    '.odt', '.odp', '.ods', '.rtf', '.txt', '.md', '.epub', '.html', '.htm', '.csv', '.tsv',
+    '.pdf', '.torrent',
     // Image extensions
-    '.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp'
+    '.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp', '.svg', '.heic', '.heif', '.avif', '.ico',
+    // Audio extensions
+    '.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a',
+    // Video extensions
+    '.mp4', '.mov', '.webm', '.avi', '.mkv',
+    // Archive extensions
+    '.zip', '.tar', '.tar.gz', '.tgz', '.7z', '.gz'
 ]);
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
@@ -118,7 +163,7 @@ export async function validateFile(
         // If typeInfo is missing, and the extension is .txt, .csv, etc, we can allow it based on text heuristic
         if (!typeInfo) {
             const extWithoutDot = ext.substring(1).toLowerCase();
-            if (['txt', 'csv', 'tsv'].includes(extWithoutDot)) {
+            if (['txt', 'csv', 'tsv', 'md', 'markdown', 'html', 'htm'].includes(extWithoutDot)) {
                 // Ensure it's mostly text by reading a chunk
                 const buffer = Buffer.alloc(512);
                 const fd = await fs.open(filePath, 'r');
@@ -176,7 +221,32 @@ export async function validateFile(
                 'doc': ['doc', 'cfb'], // file-type detects older MS Office files as cfb
                 'xls': ['xls', 'cfb'],
                 'ppt': ['ppt', 'cfb'],
-                'torrent': ['torrent']
+                'torrent': ['torrent'],
+                'm4a': ['m4a', 'mp4'],
+                'mp4': ['mp4', 'm4a', 'mov'],
+                'mov': ['mov', 'mp4', 'qt'],
+                'mkv': ['mkv'],
+                'avi': ['avi'],
+                'webm': ['webm'],
+                'mp3': ['mp3'],
+                'wav': ['wav'],
+                'aac': ['aac'],
+                'flac': ['flac'],
+                'ogg': ['ogg', 'oga'],
+                'zip': ['zip', 'jar'],
+                'tgz': ['gz', 'tar.gz', 'tgz'],
+                'gz': ['gz', 'tar.gz', 'tgz'],
+                'tar.gz': ['gz', 'tar.gz', 'tgz'],
+                'tar': ['tar'],
+                '7z': ['7z'],
+                'md': ['md', 'markdown'],
+                'html': ['html', 'htm'],
+                'htm': ['html', 'htm'],
+                'svg': ['svg', 'xml'],
+                'heic': ['heic', 'heif'],
+                'heif': ['heic', 'heif'],
+                'avif': ['avif', 'heif', 'heic'],
+                'ico': ['ico']
             };
 
             const allowedDetectedExts = extAliases[declaredExt] || [declaredExt];

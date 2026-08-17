@@ -38,7 +38,7 @@ interface CompressionInsight {
 
 interface CompressionRunResult {
     zipUrl?: string;
-    files?: { name: string; url: string; size: number }[];
+    files?: { name: string; url: string; size: number; label?: string }[];
     originalSize: number;
     compressedSize: number;
     analyses?: CompressionInsight[];
@@ -144,7 +144,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         );
     };
 
-    const backendCompressSingle = async (compressFile: CompressFile, targetTotalBytesForRun: number | null): Promise<{ name: string; url: string; size: number; originalSize: number; analysis?: CompressionInsight }> => {
+    const backendCompressSingle = async (compressFile: CompressFile, targetTotalBytesForRun: number | null): Promise<{ files: { name: string; url: string; size: number; label: string }[]; originalSize: number; analysis?: CompressionInsight }> => {
         const apiBase = getConversionApiBase();
 
         const uploadForm = new FormData();
@@ -222,7 +222,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                 break;
             }
 
-            await sleep(1200);
+            await sleep(800);
         }
 
         const resultResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
@@ -230,25 +230,52 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             throw new Error(`Result request failed for ${compressFile.file.name}`);
         }
         const resultPayload = await resultResponse.json();
-        const output = resultPayload?.outputs?.primary;
+        const primary = resultPayload?.outputs?.primary;
+        const qualityOutput = resultPayload?.outputs?.quality;
         const analysis = resultPayload?.analysis;
-        if (!output?.downloadUrl) {
+        if (!primary?.downloadUrl) {
             throw new Error(`Compressed output missing for ${compressFile.file.name}`);
         }
 
-        const response = await authFetch(buildApiUrl(apiBase, output.downloadUrl));
-        if (!response.ok) {
-            throw new Error(`Failed to fetch compressed output for ${compressFile.file.name}`);
+        const fetchOutput = async (output: { downloadUrl: string }) => {
+            const response = await authFetch(buildApiUrl(apiBase, output.downloadUrl));
+            if (!response.ok) {
+                throw new Error(`Failed to fetch compressed output for ${compressFile.file.name}`);
+            }
+            return response.blob();
+        };
+
+        const baseName = compressFile.file.name.replace(/\.[^/.]+$/, '');
+        const originalExt = compressFile.file.name.match(/\.[^/.]+$/)?.[0] || '';
+
+        const primaryBlob = await fetchOutput(primary);
+        const primaryName = `${baseName}_compressed${originalExt}`;
+
+        const files: { name: string; url: string; size: number; label: string }[] = [{
+            name: primaryName,
+            url: URL.createObjectURL(primaryBlob),
+            size: primaryBlob.size,
+            label: 'Criteria-matched',
+        }];
+
+        // Second output: quality-preserving variant. When the primary and the
+        // high-quality result converge (same path) we avoid duplicating it.
+        if (qualityOutput?.downloadUrl && qualityOutput.downloadUrl !== primary.downloadUrl) {
+            const qualityBlob = await fetchOutput(qualityOutput);
+            files.push({
+                name: `${baseName}_quality_preserved${originalExt}`,
+                url: URL.createObjectURL(qualityBlob),
+                size: qualityBlob.size,
+                label: 'Quality-preserved',
+            });
         }
-        const blob = await response.blob();
-        const name = compressFile.file.name.replace(/\.[^/.]+$/, '') + '_compressed' + (compressFile.file.name.match(/\.[^/.]+$/)?.[0] || '');
 
         const insight: CompressionInsight | undefined = analysis
             ? {
                 fileName: compressFile.file.name,
                 detectedType: analysis.detectedType || 'other',
                 originalSize: Number(analysis.originalSize ?? compressFile.originalSize),
-                compressedSize: Number(analysis.compressedSize ?? blob.size),
+                compressedSize: Number(analysis.compressedSize ?? primaryBlob.size),
                 savingsPercent: Number(analysis.savingsPercent ?? 0),
                 breakdownBytes: analysis.breakdownBytes
                     ? {
@@ -267,9 +294,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             : undefined;
 
         return {
-            name,
-            url: URL.createObjectURL(blob),
-            size: blob.size,
+            files,
             originalSize: compressFile.originalSize,
             analysis: insight,
         };
@@ -765,7 +790,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         const backendCandidates = files.filter(shouldUseBackendCompression);
         if (backendCandidates.length > 0) {
             try {
-                const outputs: { name: string; url: string; size: number }[] = [];
+                const outputs: { name: string; url: string; size: number; label?: string }[] = [];
                 const analyses: CompressionInsight[] = [];
                 let totalOriginalSize = 0;
                 let totalCompressedSize = 0;
@@ -776,9 +801,11 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
 
                     if (shouldUseBackendCompression(compressFile)) {
                         const backendOut = await backendCompressSingle(compressFile, targetTotalBytesForRun);
-                        outputs.push({ name: backendOut.name, url: backendOut.url, size: backendOut.size });
+                        for (const f of backendOut.files) {
+                            outputs.push({ name: f.name, url: f.url, size: f.size, label: f.label });
+                        }
                         totalOriginalSize += backendOut.originalSize;
-                        totalCompressedSize += backendOut.size;
+                        totalCompressedSize += backendOut.files[0]?.size ?? 0;
                         if (backendOut.analysis) {
                             analyses.push(backendOut.analysis);
                         }
@@ -803,7 +830,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                     if (outputMode === 'zip') {
                         const zip = new JSZip();
                         for (const fileOut of outputs) {
-                            const blob = await (await fetch(fileOut.url)).blob();
+                            const blob = await (await authFetch(fileOut.url)).blob();
                             zip.file(fileOut.name, blob);
                         }
                         const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 } });
@@ -1143,7 +1170,12 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                             {result.files.map((f, i) => (
                                 <div key={i} className="flex items-center justify-between p-3 bg-black/5 dark:bg-white/5 rounded-lg border border-[var(--border-color)]">
                                     <div className="flex flex-col overflow-hidden mr-4">
-                                        <span className="text-sm font-medium text-[var(--text-primary)] truncate">{f.name}</span>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm font-medium text-[var(--text-primary)] truncate">{f.name}</span>
+                                            {f.label && (
+                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--primary-color)]/15 text-[var(--primary-color)] font-semibold whitespace-nowrap">{f.label}</span>
+                                            )}
+                                        </div>
                                         <span className="text-xs text-[var(--text-tertiary)]">{formatBytes(f.size)}</span>
                                     </div>
                                     <a href={f.url} download={f.name} className="p-2 bg-[var(--primary-color)] text-[var(--text-primary)] rounded-md hover:opacity-90 transition-opacity flex-shrink-0"><DownloadIcon className="w-4 h-4" /></a>

@@ -2,12 +2,19 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
+// Always load the backend's own .env (resolved from this file's location),
+// regardless of the process working directory. dotenv.config() with no path
+// reads process.cwd()/.env, so launching from the project root silently picks
+// up the root .env (which can hold a different/stale SMTP password).
+// (Compiled to CommonJS, so __dirname is available at runtime.)
+const envDir = path.resolve(__dirname, '../..');
+dotenv.config({ path: path.join(envDir, '.env') });
 dotenv.config();
 
 const EnvSchema = z.object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().min(1).max(65535).default(8080),
-    HOST: z.string().default('0.0.0.0'),
+    HOST: z.string().default('127.0.0.1'),
     REDIS_URL: z.string().default('redis://localhost:6379'),
     STORAGE_ROOT: z.string().default('./storage'),
     SOFFICE_BINARY: z.string().default('soffice'),
@@ -22,6 +29,8 @@ const EnvSchema = z.object({
     JOB_ATTEMPTS: z.coerce.number().int().positive().default(3),
     JOB_BACKOFF_MS: z.coerce.number().int().positive().default(5000),
     CORS_ORIGIN: z.string().default('*'),
+    STREAMTOR_INTERNAL_URL: z.string().default('http://127.0.0.1:3002'),
+    STREAMTOR_INTERNAL_TOKEN: z.string().optional(),
     RUN_INLINE_WORKERS: z.string().default('false'),
     SMTP_HOST: z.string().default('smtp.gmail.com'),
     SMTP_PORT: z.coerce.number().int().positive().default(587),
@@ -37,6 +46,7 @@ const EnvSchema = z.object({
     DB_IDLE_TIMEOUT_MS: z.string().default('30000'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
+    GEMINI_API_KEY: z.string().optional(),
 });
 
 const parsed = EnvSchema.parse(process.env);

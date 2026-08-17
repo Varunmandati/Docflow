@@ -43,7 +43,7 @@ export async function ensureStorageLayout(): Promise<void> {
     await fs.mkdir(jobsDir, { recursive: true });
 }
 
-export async function saveUpload(fileName: string, mimeType: string, content: Buffer): Promise<UploadedFileMeta> {
+export async function saveUpload(fileName: string, mimeType: string, content: Buffer, userId?: string): Promise<UploadedFileMeta> {
     await ensureStorageLayout();
 
     const fileId = randomUUID();
@@ -60,6 +60,7 @@ export async function saveUpload(fileName: string, mimeType: string, content: Bu
         size: content.length,
         path: storedPath,
         createdAt: new Date().toISOString(),
+        userId,
     };
 
     await fs.writeFile(uploadMetaPath(fileId), JSON.stringify(meta, null, 2), 'utf-8');
@@ -73,6 +74,22 @@ export async function getUploadMeta(fileId: string): Promise<UploadedFileMeta | 
     } catch {
         return null;
     }
+}
+
+/**
+ * Ownership check for an uploaded file. Returns the meta only when the upload
+ * belongs to the given user (or the user is null and the upload is anonymous).
+ * Returns null otherwise — the caller should treat this as "not found" so an
+ * attacker cannot distinguish a missing file from a forbidden one.
+ */
+export async function getUploadMetaForUser(fileId: string, userId: string | null): Promise<UploadedFileMeta | null> {
+    const meta = await getUploadMeta(fileId);
+    if (!meta) return null;
+    if (userId) {
+        return meta.userId === userId ? meta : null;
+    }
+    // Unauthenticated flows (e.g. torrents) only reach anonymous uploads.
+    return meta.userId ? null : meta;
 }
 
 export interface JobWorkspace {
