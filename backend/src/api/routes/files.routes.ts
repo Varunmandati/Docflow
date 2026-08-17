@@ -8,13 +8,30 @@ import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { CompressionJobData, ConversionJobData, BatchImageConversionJobData, ImageFormat } from '../../models/types.js';
 import { compressionQueue, conversionQueue } from '../../queue/queues.js';
-import { getUploadMeta, resolveStoragePath, saveUpload } from '../../services/storage.service.js';
+import { getUploadMetaForUser, resolveStoragePath, saveUpload } from '../../services/storage.service.js';
 import { validateFile, sanitizeFileName } from '../../services/file-validation.service.js';
 import { extractFirebaseUser, verifyFirebaseToken } from '../../middleware/firebase.middleware.js';
 import { jobService } from '../../services/job.service.js';
 import { auditService } from '../../services/audit.service.js';
-import { getUserProfile, updateUserProfile } from '../../services/profile.service.js';
+import { getUserProfile, updateUserProfile, ensureUserExists } from '../../services/profile.service.js';
 import { updateJobStatus } from '../../services/job-state.service.js';
+
+// Content-Disposition filenames are user-controlled (original upload names /
+// artifact names). Strip characters that could break out of the header value.
+const safeHeaderFilename = (name: string): string =>
+    String(name).replace(/[\r\n"]/g, '_').replace(/\\/g, '/').slice(0, 255) || 'file';
+
+// Artifact paths live under {STORAGE_ROOT}/jobs/{jobId}/... — the first path
+// segment must be `jobs` and the second the jobId, so ownership can be proven
+// by looking up the job for the current user. Anything else is rejected.
+async function assertArtifactOwned(userId: string | null, relativePath: string): Promise<boolean> {
+    if (!userId) return false;
+    const segments = relativePath.split('/');
+    if (segments.length < 2 || segments[0] !== 'jobs') return false;
+    const jobId = segments[1];
+    const job = await jobService.getJob(jobId, userId);
+    return !!job;
+}
 
 const ConvertSchema = z.object({
     fileId: z.string().min(1),
@@ -67,6 +84,15 @@ export async function filesRoutes(app: FastifyInstance) {
         }
 
         try {
+            const user = await extractFirebaseUser(request as any);
+            const userId = user?.uid ?? null;
+
+            // Jobs carry an FK to users; ensure the row exists for this caller
+            // so job creation below never fails on a missing user.
+            if (userId) {
+                await ensureUserExists({ uid: userId, email: user?.email, name: user?.name, avatarUrl: user?.picture });
+            }
+
             // Save to temporary location first
             const tempPath = path.join(env.STORAGE_ROOT, 'temp', `${randomUUID()}-${sanitizeFileName(file.filename)}`);
             await fsPromises.mkdir(path.dirname(tempPath), { recursive: true });
@@ -90,8 +116,8 @@ export async function filesRoutes(app: FastifyInstance) {
                 storedMimeType = 'application/x-binary-transfer';
             }
 
-            // Move to permanent storage
-            const meta = await saveUpload(file.filename, storedMimeType, buffer);
+            // Move to permanent storage (ownership bound to the current user)
+            const meta = await saveUpload(file.filename, storedMimeType, buffer, userId);
 
             // Clean up temp file
             await fsPromises.unlink(tempPath).catch(() => {});
@@ -118,7 +144,10 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        const uploaded = await getUploadMeta(parsed.data.fileId);
+        const user = await extractFirebaseUser(request as any);
+        const userId = user?.uid ?? null;
+
+        const uploaded = await getUploadMetaForUser(parsed.data.fileId, userId);
         if (!uploaded) {
             return reply.code(404).send({ message: 'Uploaded file not found.' });
         }
@@ -126,9 +155,6 @@ export async function filesRoutes(app: FastifyInstance) {
         const { sourceFormat, targetFormat, options } = parsed.data;
 
         const jobId = randomUUID();
-
-        const user = await extractFirebaseUser(request as any);
-        const userId = user?.uid;
 
         const jobData: ConversionJobData = {
             jobId,
@@ -138,7 +164,7 @@ export async function filesRoutes(app: FastifyInstance) {
             sourceFormat,
             targetFormat,
             options,
-            userId,
+            userId: userId ?? undefined,
         };
 
         // Persistent record in PostgreSQL — the row id matches the BullMQ job id
@@ -201,7 +227,10 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        const uploaded = await getUploadMeta(parsed.data.fileId);
+        const user = await extractFirebaseUser(request as any);
+        const userId = user?.uid ?? null;
+
+        const uploaded = await getUploadMetaForUser(parsed.data.fileId, userId);
         if (!uploaded) {
             return reply.code(404).send({ message: 'Uploaded file not found.' });
         }
@@ -214,16 +243,13 @@ export async function filesRoutes(app: FastifyInstance) {
             lockQuality: parsed.data.options?.lockQuality ?? false,
         };
 
-        const user = await extractFirebaseUser(request as any);
-        const userId = user?.uid;
-
         const jobData: CompressionJobData = {
             jobId,
             fileId: uploaded.fileId,
             inputPath: uploaded.path,
             inputName: uploaded.originalName,
             options,
-            userId,
+            userId: userId ?? undefined,
         };
 
         // Persistent record in PostgreSQL — the row id matches the BullMQ job id
@@ -286,9 +312,13 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        // Fetch all image file metadata
+        const user = await extractFirebaseUser(request as any);
+        const userId = user?.uid ?? null;
+
+        // Fetch all image file metadata — ownership-scoped so users cannot
+        // combine files uploaded by someone else.
         const imageMetas = await Promise.all(
-            parsed.data.imageFileIds.map((fileId) => getUploadMeta(fileId))
+            parsed.data.imageFileIds.map((fileId) => getUploadMetaForUser(fileId, userId))
         );
 
         // Validate all files exist
@@ -317,9 +347,6 @@ export async function filesRoutes(app: FastifyInstance) {
         const jobId = randomUUID();
         const batchId = randomUUID();
         const outputFileName = parsed.data.outputFileName ?? `images-combined-${Date.now()}.pdf`;
-
-        const user = await extractFirebaseUser(request as any);
-        const userId = user?.uid;
 
         const jobData: BatchImageConversionJobData = {
             jobId,
@@ -376,7 +403,7 @@ export async function filesRoutes(app: FastifyInstance) {
         const uid = user?.uid || null;
 
         const params = request.params as { fileId: string };
-        const meta = await getUploadMeta(params.fileId);
+        const meta = await getUploadMetaForUser(params.fileId, uid);
 
         if (!meta) {
             return reply.code(404).send({ message: 'File not found.' });
@@ -391,7 +418,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
         const stream = fs.createReadStream(meta.path);
         reply.header('Content-Type', meta.mimeType || 'application/octet-stream');
-        reply.header('Content-Disposition', `attachment; filename="${meta.originalName}"`);
+        reply.header('Content-Disposition', `attachment; filename="${safeHeaderFilename(meta.originalName)}"`);
         return reply.send(stream);
     });
 
@@ -412,6 +439,14 @@ export async function filesRoutes(app: FastifyInstance) {
             return reply.code(404).send({ message: 'Artifact file not found.' });
         }
 
+        // Ownership gate: only artifacts under a job owned by this user are
+        // downloadable. Prevents any authenticated user reading other users'
+        // conversion/compression outputs by guessing storage paths.
+        const owned = await assertArtifactOwned(uid, query.path);
+        if (!owned) {
+            return reply.code(403).send({ message: 'You do not have access to this artifact.' });
+        }
+
         const stats = await fsPromises.stat(absolutePath);
 
         if (uid) {
@@ -425,7 +460,7 @@ export async function filesRoutes(app: FastifyInstance) {
         const fileName = path.basename(absolutePath);
 
         reply.header('Content-Type', contentType);
-        reply.header('Content-Disposition', `attachment; filename="${fileName}"`);
+        reply.header('Content-Disposition', `attachment; filename="${safeHeaderFilename(fileName)}"`);
         return reply.send(fs.createReadStream(absolutePath));
     });
 

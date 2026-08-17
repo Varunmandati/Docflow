@@ -1,4 +1,6 @@
 import Fastify from 'fastify';
+import fastifyStatic from '@fastify/static';
+import path from 'node:path';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import cookie from '@fastify/cookie';
@@ -52,33 +54,59 @@ export async function buildServer() {
         },
     });
 
-    await app.register(swagger, {
-        openapi: {
-            info: {
-                title: 'DocFlow API',
-                description: 'API documentation for DocFlow Conversion and Processing system',
-                version: '1.0.0'
-            },
-            components: {
-                securitySchemes: {
-                    cookieAuth: {
-                        type: 'apiKey',
-                        name: 'accessToken',
-                        in: 'cookie',
+    // Swagger docs are dev-only: never expose the API surface in production.
+    if (process.env.NODE_ENV !== 'production') {
+        await app.register(swagger, {
+            openapi: {
+                info: {
+                    title: 'DocFlow API',
+                    description: 'API documentation for DocFlow Conversion and Processing system',
+                    version: '1.0.0'
+                },
+                components: {
+                    securitySchemes: {
+                        cookieAuth: {
+                            type: 'apiKey',
+                            name: 'accessToken',
+                            in: 'cookie',
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 
-    await app.register(swaggerUi, {
-        routePrefix: '/docs',
-        uiConfig: {
-            docExpansion: 'list',
-            deepLinking: false
-        },
-    });
+        await app.register(swaggerUi, {
+            routePrefix: '/docs',
+            uiConfig: {
+                docExpansion: 'list',
+                deepLinking: false
+            },
+        });
+    }
 
     await registerRoutes(app);
+
+    await app.register(fastifyStatic, {
+        root: path.resolve(process.cwd(), 'dist'),
+        wildcard: true,
+        index: 'index.html',
+    });
+
+    app.setNotFoundHandler(async (request, reply) => {
+        if (
+            request.method === 'GET' &&
+            request.headers.accept?.includes('text/html') &&
+            !request.url.startsWith('/api/')
+        ) {
+            return reply.sendFile('index.html');
+        }
+
+        return reply.code(404).send({
+            message: 'Route not found',
+            error: 'Not Found',
+            statusCode: 404,
+        });
+    });
     return app;
 }
+

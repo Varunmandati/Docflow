@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GoogleGenAI } from '@google/genai';
 import { renderAsync } from 'docx-preview';
-import { AppFile, DownloadableFile, HistoryEntry, PageSize, Orientation, ColorMode, OutputFormat, SecurityOptions, PageInfo } from '../types';
+import { Document, Packer, ImageRun, Paragraph, PageBreak, AlignmentType, TextRun, ExternalHyperlink, HeadingLevel } from 'docx';
+import { AppFile, DownloadableFile, HistoryEntry, PageSize, Orientation, ColorMode, OutputFormat, SecurityOptions, PageInfo, DocxBlock, DocxRun } from '../types';
 import FileDropzone from './FileDropzone';
 import FileList from './FileList';
 import ProgressBar from './ProgressBar';
@@ -165,11 +165,12 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             throw new Error('Backend upload did not return fileId.');
         }
 
-        const outputs: Record<string, unknown> = {};
+        const sourceFormat = (appFile.file.name.split('.').pop() || '').toLowerCase().replace(/^\./, '');
+        const options: Record<string, unknown> = {};
         if (outputFormat === 'jpg' || outputFormat === 'png') {
-            outputs.images = true;
-            outputs.imageFormat = outputFormat;
-            outputs.dpi = 200;
+            options.images = true;
+            options.imageFormat = outputFormat;
+            options.dpi = 200;
         }
 
         const convertResponse = await authFetch(buildApiUrl(apiBase, '/v1/convert'), {
@@ -177,7 +178,12 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ fileId, outputs }),
+            body: JSON.stringify({
+                fileId,
+                sourceFormat,
+                targetFormat: outputFormat,
+                options,
+            }),
         });
 
         if (!convertResponse.ok) {
@@ -214,7 +220,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 break;
             }
 
-            await sleep(1200);
+            await sleep(800);
         }
 
         const resultResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
@@ -227,7 +233,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         const baseName = appFile.file.name.split('.').slice(0, -1).join('.') || appFile.file.name;
 
         if (outputFormat === 'pdf') {
-            const pdfRef = resultPayload?.outputs?.pdf;
+            const pdfRef = resultPayload?.outputs?.pdf ?? resultPayload?.outputs?.primary;
             if (!pdfRef?.downloadUrl) {
                 throw new Error(`PDF output missing for ${appFile.file.name}`);
             }
@@ -239,11 +245,14 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         }
 
         const images = resultPayload?.outputs?.images;
-        if (!Array.isArray(images) || images.length === 0) {
+        const imageList = Array.isArray(images) && images.length > 0
+            ? images
+            : (resultPayload?.outputs?.primary ? [resultPayload.outputs.primary] : []);
+        if (imageList.length === 0) {
             throw new Error(`Image output missing for ${appFile.file.name}`);
         }
 
-        return images.map((imageRef: any, idx: number) => ({
+        return imageList.map((imageRef: any, idx: number) => ({
             name: `${baseName}_page_${idx + 1}`,
             url: buildApiUrl(apiBase, imageRef.downloadUrl),
             format: outputFormat,
@@ -314,9 +323,9 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 break;
             }
 
-            await sleep(1500);
+            await sleep(1000);
             pollCount++;
-            if (pollCount > 120) {
+            if (pollCount > 180) {
                 throw new Error('Batch image conversion timeout');
             }
         }
@@ -410,12 +419,21 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                         canvas.width = viewport.width;
                         
                         await page.render({ canvasContext: context, viewport }).promise;
-                        
+
+                        const [textContent, annotations] = await Promise.all([
+                            page.getTextContent(),
+                            page.getAnnotations().catch(() => []),
+                        ]);
+                        const docxBlocks = extractPdfDocxBlocks(textContent, annotations);
+                        const text = blocksToPlainParagraphs(docxBlocks);
+
                         pages.push({
                             id: `${appFile.id}-page-${i-1}`,
                             thumbnailUrl: canvas.toDataURL('image/png'),
                             rotation: 0,
                             originalCanvas: canvas,
+                            text,
+                            docxBlocks,
                         });
                     }
                 } else if (appFile.file.type === 'image/tiff' || appFile.file.name.toLowerCase().endsWith('.tif') || appFile.file.name.toLowerCase().endsWith('.tiff')) {
@@ -764,22 +782,33 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         setIsSuggestingName(true);
         setStatusMessage(t.status.suggestingName);
         try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-            
             const quality = 0.7;
             const base64Data = firstPageCanvas.toDataURL('image/jpeg', quality).split(',')[1];
 
-            const imagePart = { inlineData: { mimeType: 'image/jpeg', data: base64Data } };
-            const textPart = { text: "Suggest a concise, snake_case filename for this document. Examples: 'invoice_acme_corp_may_2024', 'quarterly_report_q2'. Do not include the file extension or markdown formatting." };
-            
-            const response = await ai.models.generateContent({
-                model: 'gemini-flash-latest',
-                contents: { parts: [imagePart, textPart] }
-            });
+            const prompt = "Suggest a concise, snake_case filename for this document. Examples: 'invoice_acme_corp_may_2024', 'quarterly_report_q2'. Do not include the file extension or markdown formatting.";
 
-            const cleanName = response.text.trim().replace(/`/g, '').replace(/\.pdf$/, '');
-            return cleanName;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            try {
+                const apiBase = getConversionApiBase();
+                const response = await authFetch(buildApiUrl(apiBase, '/v1/ai/suggest-filename'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ imageBase64: base64Data, mimeType: 'image/jpeg', prompt }),
+                    signal: controller.signal,
+                });
 
+                if (!response.ok) {
+                    return '';
+                }
+
+                const result = await response.json();
+                const text = result?.suggestion || '';
+                const cleanName = text.trim().replace(/`/g, '').replace(/\.pdf$/, '');
+                return cleanName;
+            } finally {
+                clearTimeout(timeoutId);
+            }
         } catch (error) {
             console.error("AI filename suggestion failed:", error);
             return '';
@@ -821,6 +850,233 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             ctx.putImageData(imageData, 0, 0);
         }
         return rotatedCanvas;
+    };
+
+    const extractPdfDocxBlocks = (textContent: any, annotations: any[]): DocxBlock[] => {
+        interface RawRun { x: number; y: number; h: number; w: number; size: number; str: string; bold: boolean; italic: boolean; }
+        const styles: Record<string, any> = textContent?.styles || {};
+
+        const rawRuns: RawRun[] = [];
+        for (const it of (textContent?.items || [])) {
+            const s = it?.str;
+            if (typeof s !== 'string' || s.trim().length === 0) continue;
+            const m = it.transform as number[] | undefined;
+            if (!m || m.length < 6) continue;
+
+            const st = it.fontName ? styles[it.fontName] : null;
+            const fontFamily = String(st?.fontFamily || it.font?.name || it.fontName || '').toLowerCase();
+            const fontSize = Math.abs(st?.fontSize || 0) || Math.abs(it.height ?? 0) || 10;
+            const bold = /\bbold\b|\bblack\b|\bsemibold\b|\bheavy\b/.test(fontFamily);
+            const italic = /\bitalic\b|\boblique\b/.test(fontFamily);
+
+            rawRuns.push({
+                x: m[4],
+                y: m[5],
+                h: Math.abs(it.height ?? 0) || fontSize,
+                w: Math.abs(it.width ?? 0) || (s.length * fontSize * 0.5),
+                size: fontSize,
+                str: s,
+                bold,
+                italic,
+            });
+        }
+        if (rawRuns.length === 0) return [];
+
+        // Build link rects (PDF page coordinates, same space as text items).
+        const linkRects: { url: string; x1: number; y1: number; x2: number; y2: number }[] = [];
+        for (const a of (annotations || [])) {
+            if (a?.subtype === 'Link' && a?.url && Array.isArray(a?.rect) && a.rect.length === 4) {
+                const [x1, y1, x2, y2] = a.rect;
+                linkRects.push({ url: a.url, x1, y1, x2, y2 });
+            }
+        }
+
+        const findUrl = (x: number, y: number, w: number, h: number): string | undefined => {
+            for (const lr of linkRects) {
+                const cx = x + w / 2;
+                const cy = y + h / 2;
+                if (cx >= lr.x1 && cx <= lr.x2 && cy >= lr.y1 && cy <= lr.y2) return lr.url;
+            }
+            return undefined;
+        };
+
+        // Sort top-to-bottom, then left-to-right (PDF y grows upward).
+        rawRuns.sort((a, b) => (b.y - a.y) || (a.x - b.x));
+
+        // Group into visual lines by baseline proximity.
+        const lines: { y: number; h: number; runs: RawRun[] }[] = [];
+        for (const r of rawRuns) {
+            const last = lines[lines.length - 1];
+            if (last && Math.abs(last.y - r.y) <= Math.max(last.h, r.h) * 0.5) {
+                last.runs.push(r);
+                last.h = Math.max(last.h, r.h);
+            } else {
+                lines.push({ y: r.y, h: r.h, runs: [r] });
+            }
+        }
+
+        // Body size = median font size across the page; larger lines are headings.
+        const sizes = rawRuns.map(r => r.size).sort((a, b) => a - b);
+        const bodySize = sizes.length ? sizes[Math.floor(sizes.length / 2)] : 12;
+
+        const blocks: DocxBlock[] = [];
+        let prevY: number | null = null;
+
+        for (const line of lines) {
+            line.runs.sort((a, b) => a.x - b.x);
+            const lineSize = Math.max(...line.runs.map(r => r.size));
+
+            let type: DocxBlock['type'] = 'body';
+            if (lineSize > bodySize * 1.45) type = 'heading1';
+            else if (lineSize > bodySize * 1.2) type = 'heading2';
+            else if (lineSize > bodySize * 1.08) type = 'heading3';
+
+            const fullText = line.runs.map(r => r.str).join('');
+            if (/^\s*[•●◦▪‣·*]\s/.test(fullText)) type = 'list';
+
+            // Merge adjacent runs with identical formatting/link into one run.
+            const merged: DocxRun[] = [];
+            for (const r of line.runs) {
+                const url = findUrl(r.x, r.y, r.w, r.h);
+                const last = merged[merged.length - 1];
+                if (last && last.bold === r.bold && last.italic === r.italic && last.url === url) {
+                    last.text += r.str;
+                } else {
+                    merged.push({ text: r.str, bold: r.bold, italic: r.italic, url });
+                }
+            }
+
+            // Paragraph separation via vertical whitespace.
+            const gap = prevY === null ? 0 : prevY - line.y;
+            const breakGap = Math.max(line.h * 1.6, 12);
+            if (gap > breakGap && blocks.length > 0) {
+                blocks.push({ type: 'spacer', runs: [] });
+            }
+
+            blocks.push({ type, runs: merged });
+            prevY = line.y;
+        }
+
+        return blocks;
+    };
+
+    const blocksToPlainParagraphs = (blocks: DocxBlock[]): string[] =>
+        blocks
+            .filter(b => b.runs.length > 0)
+            .map(b => b.runs.map(r => r.text).join(''));
+
+    const buildDocxFromPages = async (pages: { canvas: HTMLCanvasElement; text?: string[]; blocks?: DocxBlock[] }[]): Promise<Blob> => {
+        const pageSizeTwips = pageSize === 'a4'
+            ? { width: 11906, height: 16838 }
+            : { width: 12240, height: 15840 };
+
+        const isLandscape = orientation === 'l';
+        const pageW = isLandscape ? pageSizeTwips.height : pageSizeTwips.width;
+        const pageH = isLandscape ? pageSizeTwips.width : pageSizeTwips.height;
+
+        const margin = 720; // 0.5 inch in twips
+        const contentWPx = (pageW - margin * 2) / 15;
+        const contentHPx = (pageH - margin * 2) / 15;
+
+        const children: Paragraph[] = [];
+
+        const runToDocx = (run: DocxRun): TextRun | ExternalHyperlink => {
+            const textRun = new TextRun({
+                text: run.text,
+                bold: run.bold,
+                italics: run.italic,
+                underline: run.underline ? {} : undefined,
+                color: run.url ? '0563C1' : undefined,
+                style: run.url ? 'Hyperlink' : undefined,
+            });
+            if (run.url) {
+                return new ExternalHyperlink({ children: [textRun], link: run.url });
+            }
+            return textRun;
+        };
+
+        for (let i = 0; i < pages.length; i++) {
+            const canvas = pages[i].canvas;
+            const text = pages[i].text;
+            const blocks = pages[i].blocks;
+
+            if (i > 0) {
+                children.push(new Paragraph({ children: [new PageBreak()] }));
+            }
+
+            if (blocks && blocks.length > 0) {
+                for (const block of blocks) {
+                    if (block.type === 'spacer') {
+                        children.push(new Paragraph({ spacing: { before: 240 }, children: [] }));
+                        continue;
+                    }
+                    const runs = block.runs.map(runToDocx);
+                    const opts: any = {
+                        spacing: { after: 200, line: 300 },
+                        children: runs.length > 0 ? runs : [new TextRun({ text: '' })],
+                    };
+                    if (block.type === 'heading1') opts.heading = HeadingLevel.HEADING_1;
+                    else if (block.type === 'heading2') opts.heading = HeadingLevel.HEADING_2;
+                    else if (block.type === 'heading3') opts.heading = HeadingLevel.HEADING_3;
+                    else if (block.type === 'list') {
+                        opts.bullet = { level: 0 };
+                        opts.indent = { left: 420, hanging: 220 };
+                    }
+                    children.push(new Paragraph(opts));
+                }
+                continue;
+            }
+
+            if (text && text.length > 0) {
+                for (const paraText of text) {
+                    children.push(new Paragraph({
+                        spacing: { after: 240 },
+                        children: [new TextRun({ text: paraText })],
+                    }));
+                }
+                continue;
+            }
+
+            const scale = Math.min(contentWPx / canvas.width, contentHPx / canvas.height);
+            const drawW = Math.max(1, Math.round(canvas.width * scale));
+            const drawH = Math.max(1, Math.round(canvas.height * scale));
+
+            const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+            if (!blob) continue;
+            const data = new Uint8Array(await blob.arrayBuffer());
+
+            const imageRun = new ImageRun({
+                type: 'png',
+                data,
+                transformation: { width: drawW, height: drawH },
+            });
+
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { before: 0, after: 0 },
+                children: [imageRun],
+            });
+
+            children.push(paragraph);
+        }
+
+        const doc = new Document({
+            sections: [{
+                properties: {
+                    page: {
+                        size: {
+                            width: pageW,
+                            height: pageH,
+                            orientation: isLandscape ? 'landscape' : 'portrait',
+                        },
+                        margin: { top: margin, right: margin, bottom: margin, left: margin },
+                    },
+                },
+                children,
+            }],
+        });
+
+        return await Packer.toBlob(doc);
     };
     
     const handleConvert = async () => {
@@ -974,8 +1230,36 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 onConversionComplete('success');
                 onAddToHistory({ name: `${filename}.pdf`, status: 'Success', url });
                 setFinalFileName(filename);
-                const aiName = await suggestFileName(files[0].pages[0].originalCanvas);
-                setAiSuggestedName(aiName);
+                suggestFileName(files[0].pages[0].originalCanvas).then(setAiSuggestedName);
+
+            } else if (globalOutputFormat === 'docx') {
+                setStatusMessage(t.status.generating);
+                const docxPages: { canvas: HTMLCanvasElement; text?: string[]; blocks?: DocxBlock[] }[] = [];
+                let pageCounter = 0;
+
+                for (const appFile of files) {
+                    for (let i = 0; i < appFile.pages.length; i++) {
+                        const page = appFile.pages[i];
+                        pageCounter++;
+                        setProgress({ current: pageCounter, total: totalPages, percentage: Math.round((pageCounter / totalPages) * 100) });
+                        setStatusMessage(`${t.status.processing} ${pageCounter}/${totalPages}`);
+
+                        docxPages.push({
+                            canvas: getProcessedCanvas(page.originalCanvas, page.rotation, colorMode),
+                            text: page.text,
+                            blocks: page.docxBlocks,
+                        });
+                    }
+                }
+
+                setStatusMessage(t.status.generating);
+                const docxBlob = await buildDocxFromPages(docxPages);
+                const docxName = files[0].file.name.split('.')[0] || 'merged_document';
+                const docxUrl = URL.createObjectURL(docxBlob);
+                generatedFiles.push({ name: docxName, url: docxUrl, format: 'docx' });
+                onConversionComplete('success');
+                onAddToHistory({ name: `${docxName}.docx`, status: 'Success', url: docxUrl });
+                setFinalFileName(docxName);
 
             } else { // Merging to ZIP for image formats
                 setStatusMessage(t.status.creatingZip);
@@ -1040,6 +1324,15 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                         const resultBlob = new Blob([buffer], { type: 'application/pdf' });
                         const url = URL.createObjectURL(resultBlob);
                         generatedFiles.push({ name: filename, url, format: fileFormat });
+                    } else if (fileFormat === 'docx') {
+                        const docxPages = appFile.pages.map(page => ({
+                            canvas: getProcessedCanvas(page.originalCanvas, page.rotation, colorMode),
+                            text: page.text,
+                            blocks: page.docxBlocks,
+                        }));
+                        const docxBlob = await buildDocxFromPages(docxPages);
+                        const docxUrl = URL.createObjectURL(docxBlob);
+                        generatedFiles.push({ name: filename, url: docxUrl, format: 'docx' });
                     } else { // Individual image formats
                         for (let i = 0; i < appFile.pages.length; i++) {
                             const page = appFile.pages[i];
@@ -1066,8 +1359,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             if (generatedFiles.length === 1) {
                 setFinalFileName(generatedFiles[0].name);
                 const firstCanvas = files[0].pages[0].originalCanvas;
-                const aiName = await suggestFileName(firstCanvas);
-                setAiSuggestedName(aiName);
+                suggestFileName(firstCanvas).then(setAiSuggestedName);
             }
         }
         
@@ -1120,7 +1412,9 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     
     const mergeLabel = globalOutputFormat === 'pdf' 
         ? t.options.merge.pdf
-        : t.options.merge.zip;
+        : globalOutputFormat === 'docx'
+            ? t.options.merge.docx
+            : t.options.merge.zip;
     const showMergeToggle = files.length > 1 || (files.length === 1 && files[0].pageCount > 1);
 
     const renderContent = () => {

@@ -5,6 +5,7 @@ import { withUserContext, withApiClient } from '../db/client.js';
 import { sendMailWithTimeout } from './email.service.js';
 import { redis } from '../queue/connection.js';
 import { logger } from '../config/logger.js';
+import { auditService } from './audit.service.js';
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 const hashOtp = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
@@ -73,12 +74,28 @@ export async function generateEmailChangeOtp(
     throw new Error('New email must be different from current email');
   }
 
+  // The caller-supplied oldEmail must match the email currently on the account.
+  // Prevents an attacker who has only guessed a user id from mailing arbitrary
+  // addresses / triggering OTP emails to third parties.
+  const profile = await getUserProfile(userId);
+  if (!profile || normalizeEmail(profile.email) !== normalizedOldEmail) {
+    throw new Error('Current email does not match the email on this account.');
+  }
+
   // Redis-backed rate limiting: max 5 requests per new email per 10 minutes
   const rateKey = `email-change:rl:${normalizedNewEmail}`;
   const current = await redis.incr(rateKey);
   if (current === 1) await redis.expire(rateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
   if (current > RATE_LIMIT_MAX) {
     throw new Error('Too many email change requests. Please try again in 10 minutes.');
+  }
+
+  // Per-user rate limit so one account cannot spam OTP emails to many targets.
+  const userRateKey = `email-change:user-rl:${userId}`;
+  const userCurrent = await redis.incr(userRateKey);
+  if (userCurrent === 1) await redis.expire(userRateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
+  if (userCurrent > RATE_LIMIT_MAX) {
+    throw new Error('Too many email change requests from this account. Please try again in 10 minutes.');
   }
 
   // Ensure target email is not already in use
@@ -102,6 +119,14 @@ export async function generateEmailChangeOtp(
       INSERT INTO otps (user_id, email, purpose, hashed_otp, expires_at, ip_address)
       VALUES ($1, $2, 'email_change', $3, NOW() + ($4 * INTERVAL '1 second'), $5)
     `, [userId, normalizedNewEmail, hashedOtp, ttlSeconds, null]);
+  });
+
+  auditService.log({
+    userId,
+    eventType: 'auth.otp_requested',
+    severity: 'info',
+    resourceId: normalizedNewEmail,
+    metadata: { purpose: 'email_change' },
   });
 
   // Send email with OTP
@@ -143,6 +168,13 @@ export async function verifyEmailChangeOtp(
   const normalizedOldEmail = normalizeEmail(oldEmail);
   const normalizedNewEmail = normalizeEmail(newEmail);
   const trimmedOtp = otp.trim();
+
+  // Re-validate the old email at verify time — the account may have changed
+  // since the OTP was requested, or the caller may be trying a stale flow.
+  const profile = await getUserProfile(userId);
+  if (!profile || normalizeEmail(profile.email) !== normalizedOldEmail) {
+    throw new Error('Current email does not match the email on this account.');
+  }
 
   const entry = await withApiClient(async (client) => {
     const res = await client.query(`
@@ -211,6 +243,14 @@ export async function verifyEmailChangeOtp(
 
   // Invalidate profile cache
   await redis.del(`user-profile:${userId}`);
+
+  auditService.log({
+    userId,
+    eventType: 'auth.email_changed',
+    severity: 'info',
+    resourceId: normalizedNewEmail,
+    metadata: { purpose: 'email_change' },
+  });
 
   return { success: true, message: 'Email changed successfully.' };
 }

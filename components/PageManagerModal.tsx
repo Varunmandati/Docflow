@@ -107,7 +107,7 @@ const PageManagerModal: React.FC<PageManagerModalProps> = ({ isOpen, onClose, fi
                         {pages.map((page, index) => (
                             <div 
                                 key={page.id} 
-                                className={`relative group aspect-w-1 aspect-h-1 rounded-lg overflow-hidden cursor-pointer transition-all duration-200 ${isPageSelected(page.id) ? 'ring-2 ring-offset-2 ring-offset-[var(--background-card)] ring-[var(--primary-color)]' : 'ring-2 ring-transparent hover:ring-[var(--primary-color)]/50'}`}
+                                className={`relative group aspect-[1/1] rounded-lg overflow-hidden cursor-pointer transition-all duration-200 ${isPageSelected(page.id) ? 'ring-2 ring-offset-2 ring-offset-[var(--background-card)] ring-[var(--primary-color)]' : 'ring-2 ring-transparent hover:ring-[var(--primary-color)]/50'}`}
                                 onClick={() => handleSelectPage(page.id)}
                             >
                                 <img 

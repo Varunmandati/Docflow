@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+.env
+.env.*
+!.env.example
+.git
+storage
+.uploads
+**/.uploads
+.upload-cache
+migrated_prompt_history
+.agents
+.github
+*.log

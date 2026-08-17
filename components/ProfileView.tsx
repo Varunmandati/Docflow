@@ -2,14 +2,16 @@ import React, { useState, useRef, useEffect } from 'react';
 import Cropper from 'react-easy-crop';
 import { ProfileTranslation } from '../translations';
 import { UserProfile } from '../types';
-import { CheckIcon } from './Icons';
+import { CheckIcon, LogoutIcon } from './Icons';
 import { getCroppedImg } from '../services/profileImageService';
+import { authFetch } from '../services/authFetch';
 import { useToast } from '../hooks/useToast';
 
 interface ProfileViewProps {
     t: ProfileTranslation;
     userProfile: UserProfile;
     onSave: (newProfile: UserProfile) => void;
+    onLogout?: () => void;
 }
 
 // Sub-component moved outside to prevent re-creation on every render
@@ -30,7 +32,7 @@ const InputField: React.FC<{ label: string; value: string; onChange?: (e: React.
     );
 };
 
-const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave }) => {
+const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLogout }) => {
     const isGlassEffect = document.documentElement.classList.contains('dark');
     const { addToast } = useToast();
     
@@ -108,14 +110,10 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave }) => 
 
         setEmailLoading(true);
         try {
-            const token = localStorage.getItem('authToken');
-            const response = await fetch('/v1/profile/change-email/request-otp', {
+            const response = await authFetch('/v1/auth/change-email', {
                 method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': token ? `Bearer ${token}` : '',
-                },
-                body: JSON.stringify({ newEmail }),
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oldEmail: email, newEmail }),
             });
 
             const data = await response.json();
@@ -140,14 +138,10 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave }) => 
 
         setEmailLoading(true);
         try {
-            const token = localStorage.getItem('authToken');
-            const response = await fetch('/v1/profile/change-email/verify-otp', {
+            const response = await authFetch('/v1/auth/verify-email-change', {
                 method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': token ? `Bearer ${token}` : '',
-                },
-                body: JSON.stringify({ newEmail, otp: emailOtp }),
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oldEmail: email, newEmail, otp: emailOtp }),
             });
 
             const data = await response.json();
@@ -171,15 +165,11 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave }) => 
 
     const handleSave = async () => {
         try {
-            const token = localStorage.getItem('authToken');
             // If avatar changed, upload it
             if (avatarPreview && avatarPreview !== userProfile.avatarUrl) {
-                const response = await fetch('/v1/profile/upload-picture', {
+                const response = await authFetch('/v1/profile/upload-picture', {
                     method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'Authorization': token ? `Bearer ${token}` : '',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ pictureDataUrl: avatarPreview }),
                 });
 
@@ -274,7 +264,17 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave }) => 
                     </div>
                 </div>
                 
-                <div className="flex justify-end mt-8 border-t border-[var(--border-color)] pt-6">
+                <div className="flex justify-end items-center gap-3 mt-8 border-t border-[var(--border-color)] pt-6">
+                    {onLogout && (
+                        <button
+                            onClick={onLogout}
+                            className="outline-btn pill-btn font-medium py-2.5 px-8 text-sm flex items-center gap-2"
+                            style={{ color: 'var(--text-secondary)' }}
+                        >
+                            <LogoutIcon className="w-4 h-4" />
+                            Logout
+                        </button>
+                    )}
                     <button 
                         onClick={handleSave} 
                         className={`glowing-btn pill-btn font-medium py-2.5 px-8 text-sm ${

@@ -32,8 +32,10 @@ export async function withUserContext<T>(
   const client = await apiPool.connect();
   try {
     await client.query('BEGIN');
-    // Set the current user context for Row Level Security policies
-    await client.query(`SET LOCAL app.current_user_id = $1`, [userId]);
+    // Set the current user context for Row Level Security policies.
+    // set_config with is_local=true is transaction-scoped and supports
+    // bind parameters (SET LOCAL does not).
+    await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId]);
     const result = await fn(client);
     await client.query('COMMIT');
     return result;

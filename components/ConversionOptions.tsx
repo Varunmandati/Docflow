@@ -67,7 +67,7 @@ const ConversionOptions: React.FC<ConversionOptionsProps> = ({
                         <h4 className="block text-sm font-medium text-[var(--text-secondary)] mb-2">{t.outputFormat}</h4>
                         <div className="flex items-center gap-2">
                             <div className="flex-grow grid grid-cols-2 sm:grid-cols-4 gap-2 bg-black/5 dark:bg-white/10 rounded-lg p-1">
-                                {(['pdf', 'jpg', 'png', 'webp'] as OutputFormat[]).map(format => (
+                                {(['pdf', 'jpg', 'png', 'webp', 'docx'] as OutputFormat[]).map(format => (
                                     <OptionButton key={format} onClick={() => setOutputFormat(format)} isActive={outputFormat === format}>{format.toUpperCase()}</OptionButton>
                                 ))}
                             </div>

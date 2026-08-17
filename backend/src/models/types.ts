@@ -16,6 +16,7 @@ export interface UploadedFileMeta {
     size: number;
     path: string;
     createdAt: string;
+    userId?: string;
 }
 
 export interface ConversionJobData {
@@ -68,6 +69,11 @@ export interface ConversionResult {
     outputs: {
         primary: OutputFileRef & { pageCount?: number };
         splitPages?: OutputFileRef[];
+        // When converting to PDF, `pdf` mirrors `primary` (convenience alias
+        // for clients that look up `outputs.pdf` directly).
+        pdf?: OutputFileRef & { pageCount?: number };
+        // When converting to image formats, each page is a separate ref.
+        images?: OutputFileRef[];
     };
     completedAt: string;
 }
@@ -85,6 +91,10 @@ export interface CompressionResult {
     fileId: string;
     outputs: {
         primary: OutputFileRef;
+        // A second, quality-preserving output that re-encodes at a high
+        // quality floor so users always get a fidelity-safe variant alongside
+        // the criteria-matched `primary` file.
+        quality: OutputFileRef;
     };
     analysis: {
         detectedType: 'scanned' | 'text' | 'mixed' | 'image' | 'archive' | 'other';
