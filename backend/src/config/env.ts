@@ -62,7 +62,7 @@ const EnvSchema = z.object({
     RUN_MIGRATIONS_ON_START: z.string().default('false'),
 });
 
-function parseTrustProxy(val: string): boolean | string | ((address: string, hop: number) => boolean) {
+export function parseTrustProxy(val: string): boolean | string | ((address: string, hop: number) => boolean) {
     const trimmed = val.trim();
     if (trimmed.toLowerCase() === 'true') return true;
     if (trimmed.toLowerCase() === 'false' || trimmed === '') return false;
