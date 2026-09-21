@@ -1,6 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { getFirebaseAdmin } from '../config/firebase.js';
 import { getAuth } from 'firebase-admin/auth';
+import type { DecodedIdToken } from 'firebase-admin/auth';
 
 export async function verifyFirebaseToken(request: FastifyRequest, reply: FastifyReply) {
     const authHeader = request.headers.authorization;
@@ -9,7 +10,7 @@ export async function verifyFirebaseToken(request: FastifyRequest, reply: Fastif
     }
 
     const token = authHeader.split('Bearer ')[1];
-    
+
     const adminApp = getFirebaseAdmin();
     if (!adminApp) {
         return reply.code(500).send({ success: false, message: 'Internal Server Error: Auth service not configured' });
@@ -18,14 +19,14 @@ export async function verifyFirebaseToken(request: FastifyRequest, reply: Fastif
     try {
         const decodedToken = await getAuth(adminApp).verifyIdToken(token);
         // Attach decoded token to request for downstream handlers
-        (request as any).user = decodedToken;
+        request.user = decodedToken;
     } catch (error) {
         request.log.error({ err: error }, 'Firebase token verification failed');
         return reply.code(401).send({ success: false, message: 'Unauthorized: Invalid or expired token' });
     }
 }
 
-export async function extractFirebaseUser(request: FastifyRequest): Promise<any | null> {
+export async function extractFirebaseUser(request: FastifyRequest): Promise<DecodedIdToken | null> {
     const authHeader = request.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return null;

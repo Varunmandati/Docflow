@@ -214,8 +214,20 @@ export class LibreOfficeEngine implements ConverterEngine {
         'png', 'jpg', 'jpeg', 'bmp', 'gif', 'tiff', 'webp', 'svg'
     ]);
 
+    // Formats LibreOffice can convert FROM PDF to (reverse conversion)
+    // NOTE: PDF -> DOCX is handled by PdfToDocxLayoutEngine for better layout preservation
+    private pdfReverseTargets = new Set(['doc', 'odt', 'rtf', 'html', 'txt']);
+
     canHandle(sourceFormat: string, targetFormat: string): boolean {
-        return this.supportedSources.has(sourceFormat) && targetFormat === 'pdf';
+        // Standard path: office formats -> PDF
+        if (this.supportedSources.has(sourceFormat) && targetFormat === 'pdf') {
+            return true;
+        }
+        // Reverse path: PDF -> office formats (docx, doc, odt, etc.)
+        if (sourceFormat === 'pdf' && this.pdfReverseTargets.has(targetFormat)) {
+            return true;
+        }
+        return false;
     }
 
     async convert(
@@ -225,13 +237,15 @@ export class LibreOfficeEngine implements ConverterEngine {
         targetFormat: string,
         options?: EngineOptions
     ): Promise<EngineConversionResult> {
-        if (targetFormat !== 'pdf') {
-            throw new Error(`LibreOfficeEngine only supports PDF output, requested: ${targetFormat}`);
+        // Validate target format
+        const isReverseConversion = sourceFormat === 'pdf' && this.pdfReverseTargets.has(targetFormat);
+        if (!isReverseConversion && targetFormat !== 'pdf') {
+            throw new Error(`LibreOfficeEngine: unsupported conversion ${sourceFormat} -> ${targetFormat}`);
         }
 
         const startTime = Date.now();
         const baseName = path.basename(inputPath, path.extname(inputPath));
-        const expectedOutputPath = path.join(outputDir, `${baseName}.pdf`);
+        const expectedOutputPath = path.join(outputDir, `${baseName}.${targetFormat}`);
 
         // This LO build ships no EPUB import filter, so flatten the book into
         // a single HTML document and convert that instead.
@@ -245,7 +259,7 @@ export class LibreOfficeEngine implements ConverterEngine {
         const profile = await profilePool.acquire();
 
         // Execute LibreOffice headless
-        // e.g. soffice --headless --convert-to pdf --outdir /output /input/file.docx
+        // e.g. soffice --headless --convert-to docx --outdir /output /input/file.pdf
         const args = [
             '--headless',
             '--invisible',
@@ -254,7 +268,7 @@ export class LibreOfficeEngine implements ConverterEngine {
             '--nofirststartwizard',
             `-env:UserInstallation=${toFileUri(profile.dir)}`,
             '--convert-to',
-            'pdf',
+            targetFormat,
             '--outdir',
             outputDir,
             loInput

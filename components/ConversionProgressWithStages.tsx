@@ -41,7 +41,7 @@ export const ConversionProgressWithStages: React.FC<ConversionProgressWithStages
   const hasFailed = stages.some((s) => s.status === 'failed');
 
   return (
-    <div className="rounded-lg border border-[var(--border-color)] p-6 bg-white dark:bg-[var(--background-card)] space-y-4 shadow-sm">
+    <div className="rounded-lg border border-[var(--border-color)] p-6 bg-[var(--background-card)] space-y-4 shadow-sm">
       {/* Header */}
       <div className="flex justify-between items-start">
         <div className="flex-1">
@@ -60,7 +60,7 @@ export const ConversionProgressWithStages: React.FC<ConversionProgressWithStages
         {onCancel && !isComplete && !hasFailed && (
           <button
             onClick={onCancel}
-            className="text-sm px-3 py-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+            className="text-sm px-3 py-1.5 rounded-lg hover:bg-[var(--well)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
             title="Cancel conversion"
           >
             ⊘ Cancel
@@ -79,7 +79,7 @@ export const ConversionProgressWithStages: React.FC<ConversionProgressWithStages
               {totalProgress}%{remainingTime > 0 && ` • ~${remainingTime}s`}
             </span>
           </div>
-          <div className="w-full h-2.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+          <div className="w-full h-2.5 bg-[var(--well-strong)] rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-500 ${
                 hasFailed
@@ -146,7 +146,7 @@ export const ConversionProgressWithStages: React.FC<ConversionProgressWithStages
 
               {/* Progress Bar */}
               {(isActive || stage.progress > 0 || isComplete) && (
-                <div className="ml-5 h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+                <div className="ml-5 h-1.5 bg-[var(--well-strong)] rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-300 ${getProgressBarColor()}`}
                     style={{ width: `${Math.min(stage.progress, 100)}%` }}

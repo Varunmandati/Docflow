@@ -83,6 +83,7 @@ export interface ConverterTranslation {
         error: string;
         suggestingName: string;
         creatingZip: string;
+        signInRequired: string;
     },
     success: {
         title: string;
@@ -93,6 +94,7 @@ export interface ConverterTranslation {
         aiSuggestion: string;
         useSuggestionButton: string;
         fileNameLabel: string;
+        suggestingName: string;
     },
     options: {
         merge: {
@@ -240,7 +242,8 @@ export const translations: { [key: string]: Translation } = {
                 complete: 'Processing complete!',
                 error: 'Error during processing',
                 suggestingName: 'AI is suggesting a filename...',
-                creatingZip: 'Creating ZIP archive...'
+                creatingZip: 'Creating ZIP archive...',
+                signInRequired: 'Sign in is required to convert office documents.'
             },
             success: {
                 title: 'Processing Successful!',
@@ -250,7 +253,8 @@ export const translations: { [key: string]: Translation } = {
                 downloadZipButton: 'Download All as ZIP',
                 aiSuggestion: 'AI Suggestion',
                 useSuggestionButton: 'Use Suggestion',
-                fileNameLabel: 'File Name'
+                fileNameLabel: 'File Name',
+                suggestingName: 'AI is suggesting a filename...'
             },
             options: {
                 merge: {
@@ -425,7 +429,8 @@ export const translations: { [key: string]: Translation } = {
                 complete: 'संसाधन पूरा हुआ!',
                 error: 'संसाधन के दौरान त्रुटि',
                 suggestingName: 'AI एक फ़ाइल नाम सुझा रहा है...',
-                creatingZip: 'ZIP संग्रह बनाया जा रहा है...'
+                creatingZip: 'ZIP संग्रह बनाया जा रहा है...',
+                signInRequired: 'ऑफिस दस्तावेज़ों को बदलने के लिए साइन इन करना आवश्यक है।'
             },
             success: {
                 title: 'संसाधन सफल!',
@@ -435,7 +440,8 @@ export const translations: { [key: string]: Translation } = {
                 downloadZipButton: 'सभी को ZIP में डाउनलोड करें',
                 aiSuggestion: 'AI सुझाव',
                 useSuggestionButton: 'सुझाव का प्रयोग करें',
-                fileNameLabel: 'फ़ाइल का नाम'
+                fileNameLabel: 'फ़ाइल का नाम',
+                suggestingName: 'AI एक फ़ाइल नाम सुझा रहा है...'
             },
             options: {
                 merge: {
@@ -610,7 +616,8 @@ export const translations: { [key: string]: Translation } = {
                 complete: 'প্রসেসিং সম্পন্ন!',
                 error: 'প্রসেসিং করার সময় ত্রুটি',
                 suggestingName: 'AI একটি ফাইলের নাম প্রস্তাব করছে...',
-                creatingZip: 'ZIP আর্কাইভ তৈরি হচ্ছে...'
+                creatingZip: 'ZIP আর্কাইভ তৈরি হচ্ছে...',
+                signInRequired: 'অফিস ডকুমেন্ট রূপান্তর করতে সাইন ইন করা প্রয়োজন।'
             },
             success: {
                 title: 'প্রসেসিং সফল!',
@@ -620,7 +627,8 @@ export const translations: { [key: string]: Translation } = {
                 downloadZipButton: 'সবগুলি ZIP হিসাবে ডাউনলোড করুন',
                 aiSuggestion: 'AI প্রস্তাবনা',
                 useSuggestionButton: 'প্রস্তাবনা ব্যবহার করুন',
-                fileNameLabel: 'ফাইলের নাম'
+                fileNameLabel: 'ফাইলের নাম',
+                suggestingName: 'AI একটি ফাইলের নাম প্রস্তাব করছে...'
             },
             options: {
                 merge: {
@@ -795,7 +803,8 @@ export const translations: { [key: string]: Translation } = {
                 complete: 'పూర్తయింది!',
                 error: 'లోపం సంభవించింది',
                 suggestingName: 'AI ఫైల్ పేరును సూచిస్తోంది...',
-                creatingZip: 'ZIP ఆర్కైవ్ సృష్టిస్తోంది...'
+                creatingZip: 'ZIP ఆర్కైవ్ సృష్టిస్తోంది...',
+                signInRequired: 'ఆఫీస్ పత్రాలను మార్చడానికి సైన్ ఇన్ అవసరం।'
             },
             success: {
                 title: 'విజయవంతమైంది!',
@@ -805,7 +814,8 @@ export const translations: { [key: string]: Translation } = {
                 downloadZipButton: 'అన్నింటినీ ZIPగా డౌన్‌లోడ్ చేయండి',
                 aiSuggestion: 'AI సూచన',
                 useSuggestionButton: 'సూచనను ఉపయోగించండి',
-                fileNameLabel: 'ఫైల్ పేరు'
+                fileNameLabel: 'ఫైల్ పేరు',
+                suggestingName: 'AI ఫైల్ పేరును సూచిస్తోంది...'
             },
             options: {
                 merge: {

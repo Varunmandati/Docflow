@@ -118,10 +118,10 @@ export function setupRateLimitedRoutes(app: FastifyInstance) {
         }
     });
 
-    // Rate limit email change: 10 per hour per IP (sensitive account action).
+    // Rate limit email change: 10 per 10 minutes per IP.
     app.addHook('onRequest', async (request, reply) => {
         if (matchRoute(request, '/v1/auth/change-email') && request.method === 'POST') {
-            await rateLimitMiddleware(request, reply, 10, 3600);
+            await rateLimitMiddleware(request, reply, 10, 600);
         }
     });
 
@@ -129,6 +129,20 @@ export function setupRateLimitedRoutes(app: FastifyInstance) {
     app.addHook('onRequest', async (request, reply) => {
         if (matchRoute(request, '/v1/auth/verify-email-change') && request.method === 'POST') {
             await rateLimitMiddleware(request, reply, 10, 600);
+        }
+    });
+
+    // Rate limit OTP request: 10 per 10 minutes per IP.
+    app.addHook('onRequest', async (request, reply) => {
+        if (matchRoute(request, '/v1/auth/otp/request') && request.method === 'POST') {
+            await rateLimitMiddleware(request, reply, 10, 600);
+        }
+    });
+
+    // Rate limit OTP verify: 20 per 10 minutes per IP.
+    app.addHook('onRequest', async (request, reply) => {
+        if (matchRoute(request, '/v1/auth/otp/verify') && request.method === 'POST') {
+            await rateLimitMiddleware(request, reply, 20, 600);
         }
     });
 }

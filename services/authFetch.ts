@@ -92,7 +92,11 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 export const authFetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
-    const fullUrl = `${API_BASE_URL}${url}`;
+    // If the caller already built a full URL (via buildApiUrl), do NOT
+    // prepend the base again — that would double the origin in production.
+    const fullUrl = (url.startsWith('http://') || url.startsWith('https://'))
+        ? url
+        : `${API_BASE_URL}${url}`;
     const attach = async () => {
         const token = await getValidAuthToken();
         return {

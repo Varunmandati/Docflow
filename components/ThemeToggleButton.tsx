@@ -51,11 +51,12 @@ const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ theme, onChange }
     const padding = (switchHeight - knobSize) / 2; // 3px
     const knobIconSize = knobSize * 0.6; // ~14px
     
-    // Colors from the Framer config
-    const switchTrackColor = '#424242';
-    const switchActiveColor = '#DBDBDB';
-    const sunIconColor = '#FF9100';
-    const moonIconColor = '#6B6B6B';
+    // Colors — token-driven with warm sun accent
+    const switchTrackColor = 'var(--background-secondary)';
+    const switchActiveColor = 'var(--background-secondary)';
+    const sunIconColor = '#F59E0B';
+    const moonIconColor = 'var(--text-tertiary)';
+    const borderColor = 'var(--border-color)';
     
     return (
         <button
@@ -67,8 +68,9 @@ const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ theme, onChange }
                 width: `${switchWidth}px`,
                 height: `${switchHeight}px`,
                 backgroundColor: isLightMode ? switchActiveColor : switchTrackColor,
+                border: `1px solid ${borderColor}`,
                 borderRadius: `${switchHeight / 2}px`,
-                boxShadow: isLightMode ? '0 1px 3px rgba(0,0,0,0.06)' : '0 2px 8px rgba(0,0,0,0.10)',
+                boxShadow: isLightMode ? '0 1px 3px rgba(0,0,0,0.05)' : '0 2px 8px rgba(0,0,0,0.12)',
             }}
         >
             <span

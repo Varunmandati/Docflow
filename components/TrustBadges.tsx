@@ -1,7 +1,8 @@
 import React from 'react';
+import { LockClosedIcon, TrashIcon, ZapIcon, CheckBadgeIcon } from './Icons';
 
 interface TrustBadge {
-  icon: string;
+  icon: React.ReactNode;
   label: string;
   tooltip?: string;
 }
@@ -13,22 +14,22 @@ interface TrustBadgesProps {
 
 const defaultBadges: TrustBadge[] = [
   {
-    icon: '🔒',
+    icon: <LockClosedIcon className="w-3.5 h-3.5" />,
     label: 'Encrypted',
     tooltip: 'All uploads use industry-standard SSL/TLS encryption in transit',
   },
   {
-    icon: '🗑',
+    icon: <TrashIcon className="w-3.5 h-3.5" />,
     label: 'Auto-deleted',
     tooltip: 'Files are automatically deleted after 24 hours',
   },
   {
-    icon: '⚡',
+    icon: <ZapIcon className="w-3.5 h-3.5" />,
     label: 'Private',
     tooltip: 'No data collection, no analytics on your uploads',
   },
   {
-    icon: '✓',
+    icon: <CheckBadgeIcon className="w-3.5 h-3.5" />,
     label: 'GDPR Compliant',
     tooltip: 'Compliant with GDPR, CCPA, and other privacy regulations',
   },
@@ -40,20 +41,22 @@ export const TrustBadges: React.FC<TrustBadgesProps> = ({
 }) => {
   if (variant === 'card') {
     return (
-      <div className="rounded-lg border border-green-500/20 bg-green-500/5 p-4 space-y-2">
-        <h4 className="text-xs font-semibold text-green-700 dark:text-green-400 uppercase tracking-wide">
+      <div className="rounded-xl border border-[var(--border-color)] bg-[var(--background-card)] p-4 space-y-2 elevation-1">
+        <h4 className="caption-mono" style={{ color: 'var(--text-tertiary)' }}>
           Privacy & Security
         </h4>
         <div className="space-y-2">
           {defaultBadges.map((badge) => (
-            <div key={badge.label} className="flex items-center gap-2 group relative">
-              <span className="text-sm">{badge.icon}</span>
-              <span className="text-sm text-green-700 dark:text-green-400">
+            <div key={badge.label} className="flex items-center gap-2.5 group relative">
+              <span className="flex items-center justify-center w-6 h-6 rounded-md bg-[var(--background-secondary)] text-[var(--primary-color)]">
+                {badge.icon}
+              </span>
+              <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
                 {badge.label}
               </span>
               
               {showTooltips && badge.tooltip && (
-                <div className="hidden group-hover:block absolute left-0 top-full mt-1 p-2 bg-black dark:bg-white text-white dark:text-black text-xs rounded shadow-lg whitespace-nowrap z-10">
+                <div className="hidden group-hover:block absolute left-0 top-full mt-1 p-2 bg-[var(--surface-raised)] text-[var(--text-primary)] text-xs rounded-lg shadow-xl border border-[var(--border-color)] whitespace-nowrap z-10">
                   {badge.tooltip}
                 </div>
               )}
@@ -70,11 +73,11 @@ export const TrustBadges: React.FC<TrustBadgesProps> = ({
       {defaultBadges.map((badge) => (
         <div
           key={badge.label}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 group cursor-help transition-all hover:border-green-500/40 hover:bg-green-500/15"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--background-secondary)] border border-[var(--border-color)] group cursor-help transition-all hover:border-[var(--primary-color)] hover:bg-[var(--primary-highlight)]"
           title={showTooltips ? badge.tooltip : undefined}
         >
-          <span className="text-sm">{badge.icon}</span>
-          <span className="text-xs font-medium text-green-700 dark:text-green-400">
+          <span className="text-[var(--primary-color)] flex items-center">{badge.icon}</span>
+          <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
             {badge.label}
           </span>
         </div>
@@ -89,11 +92,11 @@ export const TrustBadges: React.FC<TrustBadgesProps> = ({
  */
 export const TrustMessage: React.FC = () => {
   return (
-    <div className="mt-4 p-4 rounded-lg bg-blue-500/5 border border-blue-500/20">
+    <div className="mt-4 p-4 rounded-xl bg-[var(--background-secondary)] border border-[var(--border-color)]">
       <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-        <span className="font-medium text-[var(--text-primary)]">🔒 Your privacy matters:</span> Files are encrypted in transit, 
+        <span className="font-medium text-[var(--text-primary)]">Your privacy matters:</span> Files are encrypted in transit, 
         automatically deleted after 24 hours, and never tracked or analyzed. 
-        <a href="/privacy" className="ml-1 text-blue-500 hover:text-blue-600 underline">Learn more</a>
+        <a href="/privacy" className="ml-1 text-[var(--primary-color)] hover:underline">Learn more</a>
       </p>
     </div>
   );
@@ -108,17 +111,17 @@ export const TrustFooter: React.FC = () => {
     <div className="border-t border-[var(--border-color)] mt-8 pt-8">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center text-xs text-[var(--text-tertiary)]">
         <a href="/privacy" className="hover:text-[var(--primary-color)] transition-colors">
-          🔐 Privacy Policy
+          Privacy Policy
         </a>
         <a href="/security" className="hover:text-[var(--primary-color)] transition-colors">
-          🛡️ Security
+          Security
         </a>
         <a href="/terms" className="hover:text-[var(--primary-color)] transition-colors">
-          📋 Terms of Service
+          Terms of Service
         </a>
       </div>
       
-      <div className="mt-4 p-3 rounded-lg bg-black/5 dark:bg-white/5 text-xs text-[var(--text-tertiary)] text-center">
+      <div className="mt-4 p-3 rounded-lg bg-[var(--background-secondary)] text-xs text-[var(--text-tertiary)] text-center border border-[var(--border-color)]">
         <span>ISO 27001 Certified</span>
         {' • '}
         <span>GDPR Compliant</span>

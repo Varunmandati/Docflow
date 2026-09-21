@@ -27,19 +27,18 @@ const OtpVerifySchema = z.object({
     mode: z.enum(['login', 'signup']).optional(),
 });
 
-interface AuthenticatedRequest {
-    user: { uid: string; email?: string; name?: string; picture?: string };
-}
-
 export async function authRoutes(app: FastifyInstance) {
     app.post('/v1/auth/change-email', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
-        const { user } = request as any as AuthenticatedRequest;
+        const { user } = request;
+        if (!user) {
+            return reply.code(401).send({ success: false, message: 'Unauthorized.' });
+        }
         const parsed = ChangeEmailRequestSchema.safeParse(request.body);
-        if (!parsed.success || !user.uid) {
+        if (!parsed.success) {
             return reply.code(400).send({
                 success: false,
                 message: 'Invalid request payload.',
-                details: parsed.success ? undefined : parsed.error.flatten(),
+                details: parsed.error.flatten(),
             });
         }
 
@@ -55,13 +54,16 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     app.post('/v1/auth/verify-email-change', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
-        const { user } = request as any as AuthenticatedRequest;
+        const { user } = request;
+        if (!user) {
+            return reply.code(401).send({ success: false, message: 'Unauthorized.' });
+        }
         const parsed = ChangeEmailVerifySchema.safeParse(request.body);
-        if (!parsed.success || !user.uid) {
+        if (!parsed.success) {
             return reply.code(400).send({
                 success: false,
                 message: 'Invalid request payload.',
-                details: parsed.success ? undefined : parsed.error.flatten(),
+                details: parsed.error.flatten(),
             });
         }
 
@@ -69,7 +71,7 @@ export async function authRoutes(app: FastifyInstance) {
             await ensureUserExists({ uid: user.uid, email: user.email, name: user.name, avatarUrl: user.picture });
             const { oldEmail, newEmail, otp } = parsed.data;
             const result = await verifyEmailChangeOtp(user.uid, oldEmail, newEmail, otp);
-            
+
             // Note: verification updates DB, so we can return success and the updated email
             return reply.send({
                 ...result,

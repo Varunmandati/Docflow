@@ -90,7 +90,7 @@ const PageManagerModal: React.FC<PageManagerModalProps> = ({ isOpen, onClose, fi
 
     return (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 animate-in-item" style={{ animationDuration: '0.3s' }}>
-            <div className="bg-[var(--background-card)] rounded-2xl shadow-2xl w-full max-w-4xl h-full max-h-[90vh] flex flex-col">
+            <div className="bg-[var(--background-card)] rounded-2xl elevation-5 w-full max-w-4xl h-full max-h-[90vh] flex flex-col">
                 <header className="flex justify-between items-center p-4 border-b border-[var(--border-color)] flex-shrink-0">
                     <div>
                          <h2 className="text-xl font-bold text-[var(--text-primary)]">{t.title}</h2>
@@ -98,7 +98,7 @@ const PageManagerModal: React.FC<PageManagerModalProps> = ({ isOpen, onClose, fi
                             {file.file.name} ({pages.length} {t.pages})
                          </p>
                     </div>
-                    <button onClick={onClose} className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
+                    <button onClick={onClose} className="p-2 rounded-full hover:bg-[var(--well)] transition-colors">
                         <CloseIcon className="w-6 h-6 text-[var(--text-secondary)]"/>
                     </button>
                 </header>
@@ -159,11 +159,11 @@ const PageManagerModal: React.FC<PageManagerModalProps> = ({ isOpen, onClose, fi
                     </div>
 
                     <div className={`flex items-center gap-3 transition-all duration-300 ${hasSelection ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none'}`}>
-                        <span className="text-sm font-medium text-[var(--text-primary)] bg-black/5 dark:bg-white/5 px-2 py-1 rounded-md">{selectedPages.size} selected</span>
-                        <button onClick={handleRotateSelected} title="Rotate Selected" className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-black/5 dark:hover:bg-white/5 hover:text-[var(--text-primary)] transition">
+                        <span className="text-sm font-medium text-[var(--text-primary)] bg-[var(--well)] px-2 py-1 rounded-md">{selectedPages.size} selected</span>
+                        <button onClick={handleRotateSelected} title="Rotate Selected" className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--well)] hover:text-[var(--text-primary)] transition">
                             <RotateCwIcon className="w-5 h-5"/>
                         </button>
-                        <button onClick={handleDeleteSelected} title="Delete Selected" className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-black/5 dark:hover:bg-white/5 hover:text-[var(--danger-color)] transition disabled:opacity-50" disabled={pages.length - selectedPages.size < 1}>
+                        <button onClick={handleDeleteSelected} title="Delete Selected" className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--well)] hover:text-[var(--danger-color)] transition disabled:opacity-50" disabled={pages.length - selectedPages.size < 1}>
                             <TrashIcon className="w-5 h-5"/>
                         </button>
                     </div>

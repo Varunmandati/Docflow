@@ -6,7 +6,7 @@ interface ProgressBarProps {
 
 const ProgressBar: React.FC<ProgressBarProps> = ({ progress }) => {
     return (
-        <div className="w-full bg-black/10 dark:bg-white/5 rounded-full h-4 overflow-hidden shadow-inner">
+        <div className="w-full bg-[var(--well-strong)] rounded-full h-4 overflow-hidden ring-1 ring-inset ring-[var(--border-color)]">
             <div
                 className="h-4 rounded-full transition-all duration-500 ease-out bg-gradient-to-r from-[var(--primary-color-hover)] to-[var(--primary-color)]"
                 style={{ 

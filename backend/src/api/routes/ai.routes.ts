@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
+import { verifyFirebaseToken } from '../../middleware/firebase.middleware.js';
 
 // Server-side proxy for Gemini filename suggestion. The client never holds
 // the API key; it posts the first-page image and the backend calls Gemini
@@ -12,7 +13,7 @@ const SuggestFilenameSchema = z.object({
 });
 
 export async function aiRoutes(app: FastifyInstance) {
-    app.post('/v1/ai/suggest-filename', async (request, reply) => {
+    app.post('/v1/ai/suggest-filename', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
         const parsed = SuggestFilenameSchema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({ success: false, message: 'Invalid request body.' });

@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { EyeIcon, ChevronUpIcon, ChevronDownIcon, CloseIcon, CheckCircleIcon, TrashIcon } from './Icons';
 
 interface ImageOrderItem {
     file: File;
@@ -124,16 +125,16 @@ const ImageOrderManager: React.FC<ImageOrderManagerProps> = ({
                                 onMouseUp={handleMouseUp}
                                 onMouseLeave={handleMouseUp}
                                 className={`
-                                    flex items-center gap-3 p-4 rounded-lg border-2 transition-all cursor-grab active:cursor-grabbing
+                                    flex items-center gap-3 p-4 rounded-xl border transition-all cursor-grab active:cursor-grabbing bg-[var(--background-card)]
                                     ${
                                         draggedIndex === index
-                                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-950 shadow-lg scale-105'
-                                            : 'border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 bg-white dark:bg-gray-800/50'
+                                            ? 'border-[var(--primary-color)] bg-[var(--primary-highlight)] shadow-lg scale-105'
+                                            : 'border-[var(--border-color)] hover:border-[var(--border-hover)]'
                                     }
                                 `}
                             >
                                 {/* Page Number Badge */}
-                                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white font-bold flex items-center justify-center text-sm">
+                                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-[var(--primary-color)] text-[var(--primary-text)] font-bold flex items-center justify-center text-sm">
                                     {index + 1}
                                 </div>
 
@@ -150,9 +151,9 @@ const ImageOrderManager: React.FC<ImageOrderManagerProps> = ({
                                 {/* Preview Button */}
                                 <button
                                     onClick={() => setSelectedPreview(item.preview)}
-                                    className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-900 transition-colors"
+                                    className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-[var(--background-secondary)] text-[var(--text-secondary)] border border-[var(--border-color)] rounded-lg hover:text-[var(--primary-color)] hover:border-[var(--primary-color)] transition-colors inline-flex items-center gap-1.5"
                                 >
-                                    👁️ Preview
+                                    <EyeIcon className="w-3.5 h-3.5" /> Preview
                                 </button>
 
                                 {/* Up/Down Controls */}
@@ -160,28 +161,28 @@ const ImageOrderManager: React.FC<ImageOrderManagerProps> = ({
                                     <button
                                         onClick={() => handleMoveUp(index)}
                                         disabled={index === 0}
-                                        className="p-2 text-sm font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                        className="p-2 text-sm font-medium bg-[var(--background-secondary)] text-[var(--text-secondary)] border border-[var(--border-color)] rounded-lg hover:text-[var(--text-primary)] hover:border-[var(--border-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                                         title="Move up"
                                     >
-                                        ⬆️
+                                        <ChevronUpIcon className="w-4 h-4" />
                                     </button>
                                     <button
                                         onClick={() => handleMoveDown(index)}
                                         disabled={index === items.length - 1}
-                                        className="p-2 text-sm font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                        className="p-2 text-sm font-medium bg-[var(--background-secondary)] text-[var(--text-secondary)] border border-[var(--border-color)] rounded-lg hover:text-[var(--text-primary)] hover:border-[var(--border-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                                         title="Move down"
                                     >
-                                        ⬇️
+                                        <ChevronDownIcon className="w-4 h-4" />
                                     </button>
                                 </div>
 
                                 {/* Delete Button */}
                                 <button
                                     onClick={() => handleRemove(index)}
-                                    className="flex-shrink-0 p-2 text-sm font-medium bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400 rounded hover:bg-red-200 dark:hover:bg-red-900 transition-colors"
+                                    className="flex-shrink-0 p-2 text-sm font-medium bg-[var(--error-bg)] text-[var(--danger-color)] rounded-lg hover:opacity-80 transition-opacity"
                                     title="Remove image"
                                 >
-                                    ✕
+                                    <TrashIcon className="w-4 h-4" />
                                 </button>
                             </div>
                         ))
@@ -190,24 +191,24 @@ const ImageOrderManager: React.FC<ImageOrderManagerProps> = ({
 
                 {/* Right Column - Image Preview */}
                 <div className="lg:col-span-1">
-                    <div className="sticky top-4 rounded-lg border-2 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800/50 p-4">
+                    <div className="sticky top-4 rounded-xl border border-[var(--border-color)] bg-[var(--background-card)] p-4 elevation-1">
                         <p className="text-sm font-medium text-[var(--text-primary)] mb-3">Preview</p>
                         {selectedPreview ? (
                             <div className="space-y-3">
                                 <img
                                     src={selectedPreview}
                                     alt="Preview"
-                                    className="w-full h-auto rounded-lg border border-gray-300 dark:border-gray-600 object-cover"
+                                    className="w-full h-auto rounded-lg border border-[var(--border-color)] object-cover"
                                 />
                                 <button
                                     onClick={() => setSelectedPreview(null)}
-                                    className="w-full px-3 py-2 text-xs font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                    className="w-full px-3 py-2 text-xs font-medium bg-[var(--background-secondary)] text-[var(--text-secondary)] border border-[var(--border-color)] rounded-lg hover:text-[var(--text-primary)] hover:border-[var(--border-hover)] transition-colors inline-flex items-center justify-center gap-1.5"
                                 >
-                                    Close Preview
+                                    <CloseIcon className="w-3.5 h-3.5" /> Close Preview
                                 </button>
                             </div>
                         ) : (
-                            <div className="aspect-square flex items-center justify-center bg-gray-100 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-300 dark:border-gray-600">
+                            <div className="aspect-square flex items-center justify-center bg-[var(--background-secondary)] rounded-lg border border-dashed border-[var(--border-color)]">
                                 <p className="text-xs text-[var(--text-secondary)] text-center">
                                     Click "Preview" on any image to see it here
                                 </p>
@@ -218,16 +219,16 @@ const ImageOrderManager: React.FC<ImageOrderManagerProps> = ({
             </div>
 
             {/* Footer */}
-            <div className="mt-8 flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t border-gray-300 dark:border-gray-600">
+            <div className="mt-8 flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t border-[var(--border-color)]">
                 <div className="text-sm text-[var(--text-secondary)]">
                     {items.length} image{items.length !== 1 ? 's' : ''}
                 </div>
                 <button
                     onClick={handleConfirm}
                     disabled={items.length === 0}
-                    className="px-6 py-2 font-medium text-white bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all"
+                    className="primary-btn px-6 py-2.5 font-medium disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
                 >
-                    ✓ Confirm & Combine to PDF
+                    <CheckCircleIcon className="w-4 h-4" /> Confirm & Combine to PDF
                 </button>
             </div>
         </div>

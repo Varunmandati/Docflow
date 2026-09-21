@@ -34,7 +34,7 @@ const Toast: React.FC<{ toast: Toast, onDismiss: (id: number) => void }> = ({ to
 
     return (
         <div 
-            className="flex items-start p-4 mb-4 w-full max-w-sm rounded-lg shadow-2xl animate-in slide-in-from-right-8 fade-in duration-300 bg-[var(--background-card)] border border-[var(--border-color)] overflow-hidden"
+            className="flex items-start p-4 mb-4 w-full max-w-sm rounded-lg toast-enter elevation-3 bg-[var(--background-card)] border border-[var(--border-color)] overflow-hidden"
             role="alert"
         >
             <div className="flex-shrink-0">{icons[toast.type]}</div>

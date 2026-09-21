@@ -77,7 +77,7 @@ export const UploadProgressIndicator: React.FC<UploadProgressIndicatorProps> = (
   };
 
   return (
-    <div className="rounded-lg border border-[var(--border-color)] p-4 space-y-3 bg-white dark:bg-[var(--background-card)] shadow-sm hover:shadow-md transition-shadow">
+    <div className="rounded-lg border border-[var(--border-color)] p-4 space-y-3 bg-[var(--background-card)] elevation-1">
       {/* Header */}
       <div className="flex justify-between items-start gap-2">
         <div className="flex-1">
@@ -112,7 +112,7 @@ export const UploadProgressIndicator: React.FC<UploadProgressIndicatorProps> = (
         {status === 'uploading' && onCancel && (
           <button
             onClick={onCancel}
-            className="text-xs px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+            className="text-xs px-2 py-1 rounded hover:bg-[var(--well)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
             title="Cancel upload"
           >
             ⊘ Cancel
@@ -121,7 +121,7 @@ export const UploadProgressIndicator: React.FC<UploadProgressIndicatorProps> = (
       </div>
 
       {/* Progress Bar */}
-      <div className="w-full h-2 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+      <div className="w-full h-2 bg-[var(--well-strong)] rounded-full overflow-hidden">
         <div
           className={`h-full bg-gradient-to-r ${getProgressBarColor()} rounded-full transition-all duration-300`}
           style={{ width: `${percentage}%` }}
@@ -142,7 +142,7 @@ export const UploadProgressIndicator: React.FC<UploadProgressIndicatorProps> = (
           {onCancel && (
             <button
               onClick={onCancel}
-              className="text-xs px-3 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-[var(--text-secondary)] transition-colors"
+              className="text-xs px-3 py-2 rounded-lg hover:bg-[var(--well)] text-[var(--text-secondary)] transition-colors"
             >
               Cancel
             </button>

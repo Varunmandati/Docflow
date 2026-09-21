@@ -1,7 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import JSZip from 'jszip';
 import sharp from 'sharp';
+import type { PngOptions } from 'sharp';
 import { env } from '../config/env.js';
 import { CompressionJobData, CompressionResult } from '../models/types.js';
 import { executeCommand } from './command.service.js';
@@ -17,6 +19,15 @@ const officeExt = new Set(['.docx', '.pptx', '.xlsx']);
 // its native alpha-friendly format. TIFF/BMP are handled per-pixel below so
 // alpha-capable sources stay alpha-preserving.
 const jpegOutputExt = new Set(['.tiff', '.bmp']);
+
+// Target-mode search space. Quality never drops below the readability floor;
+// instead we reduce pixel dimensions (images), palette depth (PNG), or image
+// DPI (PDF) so the user's requested size is actually achieved.
+const MIN_TARGET_QUALITY = 55;
+const MAX_TARGET_QUALITY = 95;
+const IMAGE_SCALE_TIERS = [1, 0.85, 0.7, 0.6, 0.5, 0.4, 0.35];
+const PNG_PALETTE_TIERS = [256, 128, 64];
+const PDF_DPI_TIERS = [150, 96, 60, 48];
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -55,15 +66,32 @@ async function determineImageOutputExt(blobOrPath: Buffer | string, ext: string)
     return '.jpg';
 }
 
+interface CompressImageOptions {
+    scale?: number;
+    paletteColors?: number;
+}
+
 /**
  * Re-encode image bytes to the requested output extension. The format is
  * chosen from the OUTPUT extension, never the source, so an alpha-capable
  * source routed to '.png' stays lossless-and-transparent.
  */
-async function compressImageBuffer(blob: Buffer, outExt: string, quality: number): Promise<Buffer> {
-    const pipeline = sharp(blob, { failOn: 'none' });
+async function compressImageBuffer(blob: Buffer, outExt: string, quality: number, opts: CompressImageOptions = {}): Promise<Buffer> {
+    let pipeline = sharp(blob, { failOn: 'none' });
+    const scale = opts.scale ?? 1;
+    if (scale < 1) {
+        const meta = await sharp(blob, { failOn: 'none' }).metadata().catch(() => null);
+        const w = meta?.width ? Math.max(1, Math.round(meta.width * scale)) : undefined;
+        const h = meta?.height ? Math.max(1, Math.round(meta.height * scale)) : undefined;
+        if (w && h) pipeline = pipeline.resize(w, h, { fit: 'inside' });
+    }
     if (outExt === '.png') {
-        return pipeline.png({ compressionLevel: 9, quality: clamp(quality, 40, 100) }).toBuffer();
+        const pngOpts: PngOptions = { compressionLevel: 9 };
+        if (opts.paletteColors) {
+            pngOpts.palette = true;
+            pngOpts.colors = opts.paletteColors;
+        }
+        return pipeline.png(pngOpts).toBuffer();
     }
     if (outExt === '.webp') {
         return pipeline.webp({ quality }).toBuffer();
@@ -71,17 +99,30 @@ async function compressImageBuffer(blob: Buffer, outExt: string, quality: number
     return pipeline.jpeg({ quality: clamp(quality, 35, 92), mozjpeg: true }).toBuffer();
 }
 
-async function compressImage(inputPath: string, outputPath: string, quality: number): Promise<void> {
+async function compressImage(inputPath: string, outputPath: string, quality: number, opts: CompressImageOptions = {}): Promise<void> {
     const inExt = path.extname(inputPath).toLowerCase();
     const outExt = path.extname(outputPath).toLowerCase();
-    // The target-size binary search writes extension-less temp files; use the
+    // The target-size search writes extension-less temp files; use the
     // source's own decided format in that case so the test bytes match the
     // final artifact's encoding.
     const effectiveExt = outExt || await determineImageOutputExt(inputPath, inExt);
-    const pipeline = sharp(inputPath, { failOn: 'none' });
+
+    let pipeline = sharp(inputPath, { failOn: 'none' });
+    const scale = opts.scale ?? 1;
+    if (scale < 1) {
+        const meta = await sharp(inputPath, { failOn: 'none' }).metadata().catch(() => null);
+        const w = meta?.width ? Math.max(1, Math.round(meta.width * scale)) : undefined;
+        const h = meta?.height ? Math.max(1, Math.round(meta.height * scale)) : undefined;
+        if (w && h) pipeline = pipeline.resize(w, h, { fit: 'inside' });
+    }
 
     if (effectiveExt === '.png') {
-        await pipeline.png({ compressionLevel: 9, quality: clamp(quality, 40, 100) }).toFile(outputPath);
+        const pngOpts: PngOptions = { compressionLevel: 9 };
+        if (opts.paletteColors) {
+            pngOpts.palette = true;
+            pngOpts.colors = opts.paletteColors;
+        }
+        await pipeline.png(pngOpts).toFile(outputPath);
         return;
     }
 
@@ -90,10 +131,11 @@ async function compressImage(inputPath: string, outputPath: string, quality: num
         return;
     }
 
-    await pipeline.jpeg({ quality, mozjpeg: true }).toFile(outputPath);
+    await pipeline.jpeg({ quality: clamp(quality, 35, 92), mozjpeg: true }).toFile(outputPath);
 }
 
-async function compressPdf(inputPath: string, outputPath: string, quality: number): Promise<void> {
+async function compressPdf(inputPath: string, outputPath: string, quality: number, dpiOverride?: number, jpegQ?: number): Promise<void> {
+    const dpi = dpiOverride ?? (quality >= 90 ? 300 : quality >= 78 ? 150 : 72);
     const args = [
         '-sDEVICE=pdfwrite',
         '-dCompatibilityLevel=1.4',
@@ -104,13 +146,14 @@ async function compressPdf(inputPath: string, outputPath: string, quality: numbe
         '-dDownsampleColorImages=true',
         '-dDownsampleGrayImages=true',
         '-dDownsampleMonoImages=true',
-        `-dColorImageResolution=${quality >= 90 ? 300 : quality >= 78 ? 150 : 72}`,
-        `-dGrayImageResolution=${quality >= 90 ? 300 : quality >= 78 ? 150 : 72}`,
-        `-dMonoImageResolution=${quality >= 90 ? 300 : quality >= 78 ? 150 : 72}`,
+        `-dColorImageResolution=${dpi}`,
+        `-dGrayImageResolution=${dpi}`,
+        `-dMonoImageResolution=${dpi}`,
         // Preserve vectors/text
         '-dCompressFonts=true',
         '-dEmbedAllFonts=true',
         '-dSubsetFonts=true',
+        ...(jpegQ ? [`-dJPEGQ=${jpegQ}`] : []),
         `-sOutputFile=${outputPath}`,
         inputPath,
     ];
@@ -193,81 +236,185 @@ async function compressOffice(inputPath: string, outputPath: string, quality: nu
     await fs.writeFile(outputPath, outputBuffer);
 }
 
+interface TargetSearchResult {
+    quality: number;
+    scale: number;
+    paletteColors?: number;
+    outExt?: string;
+    dpi?: number;
+    achievedSize: number;
+    floored: boolean;
+}
+
+const tempDirOf = (inputPath: string) => path.join(os.tmpdir(), 'docflow-compress-test');
+
+/** Binary search the highest quality whose output fits the target (with tolerance). */
+async function binarySearchQuality(
+    probe: (quality: number) => Promise<number>,
+    targetBytes: number,
+    toleranceBytes: number,
+    minQuality: number = MIN_TARGET_QUALITY,
+    maxQuality: number = MAX_TARGET_QUALITY,
+): Promise<{ quality: number; size: number } | null> {
+    let low = minQuality;
+    let high = maxQuality;
+    let best: { quality: number; size: number } | null = null;
+
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const size = await probe(mid);
+        if (size <= targetBytes + toleranceBytes) {
+            // Fits — remember it and try to push quality higher.
+            best = { quality: mid, size };
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return best;
+}
+
 /**
- * Find optimal quality level to achieve target file size using binary search.
- * Quality is clamped to a readability floor — we never destroy a document to
- * hit the size target; if the target can't be reached at the floor we accept
- * the larger (but still readable) output and report the achieved size.
+ * Find optimal compression parameters to achieve a target file size.
+ * - Images: binary search quality at full resolution; if the readability floor
+ *   is hit, reduce pixel dimensions (scale tiers) — quality stays readable.
+ * - PNG: lossless re-encode at decreasing scale, then palette quantization,
+ *   then (last resort) alpha-flattened JPEG so very small targets are met.
+ * - PDF: downsample embedded images at decreasing DPI, then raise JPEG
+ *   quality inside each DPI tier so the largest readable DPI wins.
+ * - Archives / office: binary search quality only (structure must be kept).
+ * When the target is physically unreachable the smallest readable result is
+ * returned with `floored: true` so the caller can report it honestly.
  */
-async function findOptimalQualityForTarget(
+export async function findOptimalQualityForTarget(
     inputPath: string,
     targetBytes: number,
     fileType: string,
-    tolerance: number = 0.05 // 5% tolerance
-): Promise<{ quality: number; achievedSize: number; qualityFloored: boolean }> {
-    // Never go below this quality: below it text/images become unreadable.
-    const MIN_QUALITY = 55;
-    const tolerance_bytes = targetBytes * tolerance;
-    let low = MIN_QUALITY;
-    let high = 95;
-    let bestQuality = MIN_QUALITY;
-    let bestSize = 0;
-    let iterations = 0;
-    const maxIterations = 15;
-    let qualityFloored = false;
+): Promise<TargetSearchResult> {
+    const toleranceBytes = targetBytes * 0.05;
+    const tempParent = tempDirOf(inputPath);
+    await fs.mkdir(tempParent, { recursive: true });
+    const tempDir = await fs.mkdtemp(path.join(tempParent, 'probe-'));
+    let smallest: TargetSearchResult | null = null;
 
-    // Create temp directory for testing
-    const tempDir = path.join(path.dirname(inputPath), '.temp-compression-test');
-    await fs.mkdir(tempDir, { recursive: true });
+    const track = (candidate: TargetSearchResult): TargetSearchResult => {
+        if (!smallest || candidate.achievedSize < smallest.achievedSize) smallest = candidate;
+        return candidate;
+    };
 
     try {
-        while (low <= high && iterations < maxIterations) {
-            iterations++;
-            const mid = Math.floor((low + high) / 2);
-            const testOutputPath = path.join(tempDir, `test_q${mid}`);
+        if (fileType === 'image') {
+            const inExt = path.extname(inputPath).toLowerCase();
+            const sourceExt = await determineImageOutputExt(inputPath, inExt);
+            const isPngSource = sourceExt === '.png';
 
-            if (fileType === 'image') {
-                await compressImage(inputPath, testOutputPath, mid);
-            } else if (fileType === 'pdf') {
-                await compressPdf(inputPath, testOutputPath, mid);
-            } else if (fileType === 'archive') {
-                await compressZip(inputPath, testOutputPath, mid);
+            // 1) Lossless-capable formats (PNG): scale reduction first — the
+            //    quality knob does not apply to lossless PNG bytes.
+            if (isPngSource) {
+                for (const scale of IMAGE_SCALE_TIERS) {
+                    const probePath = path.join(tempDir, `png_s${scale}.png`);
+                    await compressImage(inputPath, probePath, 95, { scale });
+                    const size = await getFileSize(probePath);
+                    await fs.unlink(probePath).catch(() => {});
+                    if (size <= targetBytes + toleranceBytes) {
+                        return track({ quality: 95, scale, achievedSize: size, floored: false });
+                    }
+                }
+
+                // 2) Palette quantization (keeps PNG + alpha) at full size,
+                //    then at reduced scales.
+                for (const scale of IMAGE_SCALE_TIERS) {
+                    for (const colors of PNG_PALETTE_TIERS) {
+                        const probePath = path.join(tempDir, `png_p${colors}_s${scale}.png`);
+                        await compressImage(inputPath, probePath, 95, { scale, paletteColors: colors });
+                        const size = await getFileSize(probePath);
+                        await fs.unlink(probePath).catch(() => {});
+                        if (size <= targetBytes + toleranceBytes) {
+                            return track({ quality: 95, scale, paletteColors: colors, achievedSize: size, floored: false });
+                        }
+                    }
+                }
+
+                // 3) Last resort: flatten alpha and re-encode as JPEG at the
+                //    highest quality that fits (extension changes to .jpg).
+                const flattenProbe = async (quality: number, scale: number): Promise<number> => {
+                    const probePath = path.join(tempDir, `jpg_q${quality}_s${scale}.jpg`);
+                    await compressImage(inputPath, probePath, quality, { scale });
+                    const size = await getFileSize(probePath);
+                    await fs.unlink(probePath).catch(() => {});
+                    return size;
+                };
+                for (const scale of IMAGE_SCALE_TIERS) {
+                    const found = await binarySearchQuality(
+                        (q) => flattenProbe(q, scale),
+                        targetBytes,
+                        toleranceBytes,
+                    );
+                    if (found) {
+                        return track({ quality: found.quality, scale, outExt: '.jpg', achievedSize: found.size, floored: false });
+                    }
+                }
             } else {
-                break;
+                // 3) JPEG / WebP / opaque TIFF-BMP: quality search at full
+                //    resolution, then scale reduction when the floor is hit.
+                for (const scale of IMAGE_SCALE_TIERS) {
+                    const probe = async (quality: number): Promise<number> => {
+                        const probePath = path.join(tempDir, `q${quality}_s${scale}.${sourceExt === '.webp' ? 'webp' : 'jpg'}`);
+                        await compressImage(inputPath, probePath, quality, { scale });
+                        const size = await getFileSize(probePath);
+                        await fs.unlink(probePath).catch(() => {});
+                        return size;
+                    };
+                    const found = await binarySearchQuality(
+                        probe,
+                        targetBytes,
+                        toleranceBytes,
+                    );
+                    if (found) {
+                        return track({ quality: found.quality, scale, achievedSize: found.size, floored: false });
+                    }
+                }
             }
-
-            const size = await getFileSize(testOutputPath);
-            bestSize = size;
-            bestQuality = mid;
-            qualityFloored = mid <= MIN_QUALITY;
-
-            // Clean up test file
-            await fs.unlink(testOutputPath).catch(() => {});
-
-            if (size <= targetBytes + tolerance_bytes && size >= targetBytes - tolerance_bytes) {
-                // Within tolerance, we can stop
-                break;
-            } else if (size > targetBytes + tolerance_bytes) {
-                // Too large, reduce quality (but never below the readability floor)
-                high = mid - 1;
-                if (high < MIN_QUALITY) break;
-            } else {
-                // Too small, increase quality
-                low = mid + 1;
+        } else if (fileType === 'pdf') {
+            // Highest DPI tier that can reach the target wins; inside a tier
+            // we raise the embedded-image JPEG quality as high as it fits.
+            const probe = async (dpi: number, jpegQ: number): Promise<number> => {
+                const probePath = path.join(tempDir, `pdf_d${dpi}_q${jpegQ}`);
+                await compressPdf(inputPath, probePath, 92, dpi, jpegQ);
+                const size = await getFileSize(probePath);
+                await fs.unlink(probePath).catch(() => {});
+                return size;
+            };
+            for (const dpi of PDF_DPI_TIERS) {
+                const found = await binarySearchQuality(
+                    (q) => probe(dpi, q),
+                    targetBytes,
+                    toleranceBytes,
+                );
+                if (found) {
+                    return track({ quality: found.quality, scale: 1, dpi, achievedSize: found.size, floored: false });
+                }
+            }
+        } else if (fileType === 'archive') {
+            const probe = async (quality: number): Promise<number> => {
+                const probePath = path.join(tempDir, `zip_q${quality}`);
+                await compressZip(inputPath, probePath, quality);
+                const size = await getFileSize(probePath);
+                await fs.unlink(probePath).catch(() => {});
+                return size;
+            };
+            const found = await binarySearchQuality(probe, targetBytes, toleranceBytes);
+            if (found) {
+                return track({ quality: found.quality, scale: 1, achievedSize: found.size, floored: false });
             }
         }
 
-        // If we hit the readability floor without reaching the target, prefer the
-        // largest readable size we managed (bestSize) — quality preservation wins.
-        if (qualityFloored && bestSize > targetBytes) {
-            // Re-enforce the floor on the returned quality.
-            return { quality: Math.max(bestQuality, MIN_QUALITY), achievedSize: bestSize, qualityFloored: true };
-        }
-
-        return { quality: bestQuality, achievedSize: bestSize, qualityFloored };
+        // Target unreachable — return the smallest readable candidate.
+        const fallback = smallest ?? { quality: MIN_TARGET_QUALITY, scale: 1, achievedSize: 0, floored: true };
+        return { ...fallback, floored: true };
     } finally {
-        // Clean up temp directory
         await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        await fs.rm(tempParent, { recursive: true, force: true }).catch(() => {});
     }
 }
 
@@ -281,16 +428,18 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
 
     const ext = path.extname(job.inputPath).toLowerCase();
     const base = path.basename(job.inputName, ext) || 'compressed';
-    const outputExt = ext === '.rar' ? '.zip'
+    const isRar = ext === '.rar';
+    const sourceExt = isRar ? '.rar'
         : imageExt.has(ext) ? await determineImageOutputExt(job.inputPath, ext)
         : jpegOutputExt.has(ext) ? '.jpg'
         : ext;
+    const outputExt = isRar ? '.rar' : sourceExt;
     const outputPath = path.join(outputDir, `${base}_compressed${outputExt}`);
 
     // Quality-preserving sibling: re-encode at a high fidelity floor so the
     // user always receives a near-lossless variant alongside the
     // criteria-matched file.
-    const qualityOutputPath = path.join(outputDir, `${base}_quality_preserved${outputExt}`);
+    const qualityOutputPath = path.join(outputDir, `${base}_quality_preserved${sourceExt}`);
     const QUALITY_PRESERVE_QUALITY = 92;
 
     let quality = job.options.lockQuality
@@ -298,6 +447,7 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
         : chooseQuality(job, detectedType);
     let usedTargetBytes = false;
     let qualityFloored = false;
+    let search: TargetSearchResult | undefined;
 
     // If targetBytes is specified and not locked to a specific quality, find optimal quality
     if (job.options.targetBytes && !job.options.lockQuality) {
@@ -312,15 +462,14 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
 
         if (fileType !== 'other') {
             try {
-                const optimal = await findOptimalQualityForTarget(
+                search = await findOptimalQualityForTarget(
                     job.inputPath,
                     job.options.targetBytes,
                     fileType,
-                    0.05 // 5% tolerance
                 );
-                quality = optimal.quality;
+                quality = search.quality;
                 usedTargetBytes = true;
-                qualityFloored = optimal.qualityFloored;
+                qualityFloored = search.floored;
             } catch (error) {
                 // If iterative compression fails, fall back to default quality
                 console.warn('Target-based compression failed, using default quality:', error);
@@ -328,52 +477,71 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
         }
     }
 
+    const finalOutputExt = search?.outExt || outputExt;
+    const finalOutputPath = search?.outExt && search.outExt !== outputExt
+        ? path.join(outputDir, `${base}_compressed${search.outExt}`)
+        : outputPath;
+
     // Perform final compression with chosen quality
-    if (imageExt.has(ext)) {
-        await compressImage(job.inputPath, outputPath, quality);
+    if (isRar) {
+        // RAR is a proprietary container JSZip cannot unpack; preserve the
+        // bytes so the user never loses data.
+        await fs.copyFile(job.inputPath, finalOutputPath);
+        await fs.copyFile(job.inputPath, qualityOutputPath);
+    } else if (imageExt.has(ext)) {
+        await compressImage(job.inputPath, finalOutputPath, quality, { scale: search?.scale ?? 1, paletteColors: search?.paletteColors });
     } else if (ext === '.pdf') {
-        await compressPdf(job.inputPath, outputPath, quality);
-    } else if (archiveExt.has(ext) || ext === '.rar') {
-        await compressZip(job.inputPath, outputPath, quality);
+        await compressPdf(job.inputPath, finalOutputPath, quality, search?.dpi, search ? quality : undefined);
+    } else if (archiveExt.has(ext)) {
+        await compressZip(job.inputPath, finalOutputPath, quality);
     } else if (officeExt.has(ext)) {
-        await compressOffice(job.inputPath, outputPath, quality);
+        await compressOffice(job.inputPath, finalOutputPath, quality);
     } else {
-        await fs.copyFile(job.inputPath, outputPath);
+        await fs.copyFile(job.inputPath, finalOutputPath);
     }
 
     // Quality-preserving variant: same pipeline, high fidelity floor. When the
     // user already asked for a high-quality result (quality >= floor) the two
     // files converge — that is expected and both stay downloadable.
-    if (imageExt.has(ext)) {
-        await compressImage(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
-    } else if (ext === '.pdf') {
-        await compressPdf(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
-    } else if (archiveExt.has(ext) || ext === '.rar') {
-        await compressZip(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
-    } else if (officeExt.has(ext)) {
-        await compressOffice(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
-    } else {
-        await fs.copyFile(job.inputPath, qualityOutputPath);
+    if (!isRar) {
+        if (imageExt.has(ext)) {
+            await compressImage(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+        } else if (ext === '.pdf') {
+            await compressPdf(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+        } else if (archiveExt.has(ext)) {
+            await compressZip(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+        } else if (officeExt.has(ext)) {
+            await compressOffice(job.inputPath, qualityOutputPath, QUALITY_PRESERVE_QUALITY);
+        } else {
+            await fs.copyFile(job.inputPath, qualityOutputPath);
+        }
     }
 
-    const compressedSize = await getFileSize(outputPath);
+    const compressedSize = await getFileSize(finalOutputPath);
     const qualityOutputSize = await getFileSize(qualityOutputPath);
     const savingsPercent = originalSize > 0 ? Math.max(0, ((originalSize - compressedSize) / originalSize) * 100) : 0;
 
-    const relativePath = toRelativeStoragePath(outputPath);
+    const relativePath = toRelativeStoragePath(finalOutputPath);
     const qualityRelativePath = toRelativeStoragePath(qualityOutputPath);
 
     const suggestions = [...inputAnalysis.suggestions];
-    if (usedTargetBytes) {
+    if (isRar) {
+        suggestions.unshift('RAR archives are preserved as-is (proprietary container). Convert to ZIP first for recompression.');
+    } else if (usedTargetBytes) {
         const targetPercent = job.options.targetBytes ? Math.round((job.options.targetBytes / originalSize) * 100) : 0;
         const achievedPercent = Math.round((compressedSize / originalSize) * 100);
+        const detailParts: string[] = [];
+        if (search?.scale && search.scale < 1) detailParts.push(`resized to ${Math.round(search.scale * 100)}%`);
+        if (search?.paletteColors) detailParts.push(`palette ${search.paletteColors} colors`);
+        if (search?.dpi) detailParts.push(`images ${search.dpi} DPI`);
+        const detail = detailParts.length > 0 ? ` (${detailParts.join(', ')})` : '';
         if (qualityFloored) {
             suggestions.unshift(
-                `Target ${Math.round(job.options.targetBytes! / 1024)}KB unreachable without losing readability — kept quality at ${quality}% (achieved ${Math.round(compressedSize / 1024)}KB)`
+                `Target ${Math.round(job.options.targetBytes! / 1024)}KB not reachable at readable quality${detail} — smallest result kept: ${Math.round(compressedSize / 1024)}KB (${achievedPercent}% of original)`
             );
         } else {
             suggestions.unshift(
-                `Target: ${Math.round(job.options.targetBytes! / 1024)}KB | Achieved: ${Math.round(compressedSize / 1024)}KB`
+                `Target: ${Math.round(job.options.targetBytes! / 1024)}KB | Achieved: ${Math.round(compressedSize / 1024)}KB${detail}`
             );
         }
     } else if (savingsPercent < 5) {
@@ -405,6 +573,8 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
             recommendedPreset: inputAnalysis.recommendedPreset,
             appliedPreset,
             qualityUsed: quality,
+            scaleUsed: search?.scale ?? 1,
+            dpiUsed: search?.dpi,
         },
         completedAt: new Date().toISOString(),
     };

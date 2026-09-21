@@ -11,22 +11,22 @@ interface SettingsViewProps {
 }
 
 const SettingsToggle: React.FC<{ label: string; description: string; enabled: boolean; onChange: (enabled: boolean) => void; disabled?: boolean }> = ({ label, description, enabled, onChange, disabled = false }) => (
-    <div className={`flex justify-between items-center ${disabled ? 'opacity-50' : ''}`}>
+        <div className={`flex justify-between items-center ${disabled ? 'opacity-50' : ''}`}>
         <div>
             <h4 className="body-sm font-medium text-[var(--text-primary)]">{label}</h4>
-            <p className="caption-text" style={{ color: 'var(--text-secondary)' }}>{description}</p>
+            <p className="caption-text text-[var(--text-secondary)]">{description}</p>
         </div>
         <button
             type="button"
             disabled={disabled}
             onClick={() => !disabled && onChange(!enabled)}
-            className={`${enabled ? 'bg-[var(--primary-color)]' : 'bg-black/20 dark:bg-white/20'} relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--primary-color)] focus:ring-offset-2 focus:ring-offset-[var(--background-body)] ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`${enabled ? 'bg-[var(--primary-color)]' : 'bg-[var(--well-strong)]'} relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] focus:outline-none focus:ring-2 focus:ring-[var(--primary-color)] focus:ring-offset-2 focus:ring-offset-[var(--background-body)] ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
             role="switch"
             aria-checked={enabled}
         >
             <span
                 aria-hidden="true"
-                className={`${enabled ? 'translate-x-5' : 'translate-x-0'} pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
+                className={`${enabled ? 'translate-x-5' : 'translate-x-0'} pointer-events-none inline-block h-5 w-5 transform rounded-full bg-[var(--text-primary)] shadow ring-0 transition duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]`}
             />
         </button>
     </div>
@@ -35,8 +35,7 @@ const SettingsToggle: React.FC<{ label: string; description: string; enabled: bo
 
 const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, t }) => {
     const [localSettings, setLocalSettings] = useState<ConversionSettings>(settings);
-    const isGlassEffect = settings.backgroundAnimation && (settings.theme === 'dark' || (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches));
-    const panelClasses = `relative rounded-xl border border-[var(--border-color)] p-6 bg-[var(--background-card)] elevation-3`;
+    const panelClasses = `relative panel-card p-6 elevation-3`;
 
     useEffect(() => {
         setLocalSettings(settings);
@@ -72,11 +71,11 @@ const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, t }) => {
 
     return (
         <div className="p-4 sm:p-8 w-full">
-            <header className="mb-8">
+            <header className="view-header">
                 <div className="flex items-center gap-3">
-                    <h1 className="display-md" style={{ color: 'var(--text-primary)' }}>{t.title}</h1>
+                    <h1 className="display-md">{t.title}</h1>
                 </div>
-                <p className="body-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Manage your application preferences</p>
+                <p className="body-sm mt-1">Manage your application preferences</p>
             </header>
 
             <div className="max-w-4xl mx-auto space-y-8">

@@ -1,5 +1,27 @@
 FROM node:20-bookworm
 
+# PDF->DOCX dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+    python3-pip \
+    ocrmypdf \
+    tesseract-ocr \
+    tesseract-ocr-all \
+    fonts-liberation \
+    fonts-croscore \
+    fonts-noto \
+    fonts-noto-cjk \
+    fonts-noto-cjk-extra \
+    fonts-indic \
+    fonts-hosny-amiri \
+    && rm -rf /var/lib/apt/lists/*
+
+# Setup Python venv for pdf2docx
+RUN python3 -m venv /opt/pdf2docx-venv && \
+    /opt/pdf2docx-venv/bin/pip install --no-cache-dir pdf2docx PyMuPDF docx2pdf
+ENV PDF_DOCX_PYTHON=/opt/pdf2docx-venv/bin/python3
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice \
     libreoffice-writer \

@@ -51,6 +51,9 @@ export async function ensureUserExists(input: {
       avatarUrl: input.avatarUrl,
       authProvider: input.provider,
     });
+    // The user row may have been created or reconciled just now; drop any
+    // stale cached profile so callers never see an outdated email/name.
+    await redis.del(`user-profile:${input.uid}`);
     return { id: user.id, email: user.email, display_name: user.display_name };
   } catch (err) {
     logger.error({ err }, 'Failed to ensure user exists');
@@ -79,7 +82,10 @@ export async function generateEmailChangeOtp(
   // addresses / triggering OTP emails to third parties.
   const profile = await getUserProfile(userId);
   if (!profile || normalizeEmail(profile.email) !== normalizedOldEmail) {
-    throw new Error('Current email does not match the email on this account.');
+    throw new Error(
+      `Current email does not match the email on this account. ` +
+      `Please refresh your profile and try again.`
+    );
   }
 
   // Redis-backed rate limiting: max 5 requests per new email per 10 minutes

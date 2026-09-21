@@ -106,6 +106,8 @@ export interface CompressionResult {
         recommendedPreset: CompressionPreset;
         appliedPreset: CompressionPreset;
         qualityUsed: number;
+        scaleUsed?: number;
+        dpiUsed?: number;
     };
     completedAt: string;
 }

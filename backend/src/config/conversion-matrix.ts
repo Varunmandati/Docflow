@@ -19,14 +19,12 @@ export type ConversionMatrix = Record<string, FormatDefinition>;
 // selector, so advertising a pair we can't perform reliably bricks the conversion flow.
 //
 // Real capability map (see services/converters/*):
-//  - LibreOfficeEngine : office docs -> pdf         (pdf only)
+//  - LibreOfficeEngine : office docs -> pdf, AND pdf -> docx/doc/odt/rtf/html/txt
 //  - SharpEngine       : raster->raster (png/jpg/jpeg/webp/gif/tiff/heic/heif/avif)
 //  - PdfEngine         : pdf -> jpg/png(+webp via pdftocairo)
 //  - FfmpegEngine      : audio<->audio, video->video/audio/gif
 //  - ArchiveEngine     : zip/tar/tar.gz/7z <-> each other
-//  - Client-side (jsPDF/canvas/JSZip) : pdf, jpg, png, webp, AND docx (a valid single-file
-//    OOXML package, subset: word/media/*.png + [Content_Types].xml + _rels + word/document.xml)
-//    built from the rendered pages, so pdf -> docx never produces corrupt archives.
+//  - Client-side (jsPDF/canvas) : pdf, jpg, png, webp rendering and merging
 
 const AUDIO_TARGETS = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a'];
 const VIDEO_TARGETS = ['mp4', 'mov', 'webm', 'avi', 'mkv'];
@@ -43,7 +41,7 @@ export const conversionMatrix: ConversionMatrix = {
     'pdf': {
         type: 'document',
         targets: [
-            { targetFormat: 'docx', status: 'supported', note: 'Single-file Word document (rendered pages)' },
+            { targetFormat: 'docx', status: 'supported', note: 'Layout-aware editable Word document with font, column, image, and spacing preservation' },
             { targetFormat: 'jpg', status: 'supported' },
             { targetFormat: 'png', status: 'supported' },
             { targetFormat: 'webp', status: 'supported' },

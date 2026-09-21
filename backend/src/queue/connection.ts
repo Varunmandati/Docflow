@@ -13,6 +13,13 @@ export const redis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: false,
+    // Do not buffer commands while disconnected: with the offline queue enabled,
+    // a down Redis makes every request-path command (rate-limit incr, health
+    // ping, OTP lookups) hang forever, defeating the fail-open design. Fail
+    // fast instead so routes return quickly and the health endpoint reports
+    // the outage.
+    enableOfflineQueue: false,
+    connectTimeout: 5000,
     // Keep retrying forever (bounded backoff) so a transient Redis outage does
     // not permanently kill the queue/worker for the lifetime of the process.
     // Returning null here made ioredis give up forever after 30 failed retries,
