@@ -94,9 +94,15 @@ export class PdfToDocxEngine implements ConverterEngine {
             const pdfType = await this.detectPdfType(inputPath);
             let workingPdf = inputPath;
 
+            const ocrEnabled = (process.env.PDF_DOCX_OCR ?? env.PDF_DOCX_OCR ?? 'on').toLowerCase() !== 'off';
+
             if (pdfType === 'scanned') {
-                logger.info({ inputPath }, 'PdfToDocxEngine: scanned PDF detected — running ocrmypdf');
-                workingPdf = await this.runOcr(inputPath, tmpDir);
+                if (ocrEnabled) {
+                    logger.info({ inputPath }, 'PdfToDocxEngine: scanned PDF detected — running ocrmypdf');
+                    workingPdf = await this.runOcr(inputPath, tmpDir);
+                } else {
+                    logger.info({ inputPath }, 'PdfToDocxEngine: scanned PDF detected but OCR is disabled (PDF_DOCX_OCR=off)');
+                }
             }
 
             // ─── 2. Primary: pdf2docx ─────────────────────────────────────
@@ -123,6 +129,9 @@ export class PdfToDocxEngine implements ConverterEngine {
 
                 const stats = await fs.stat(expectedOutput).catch(() => null);
                 if (!stats || stats.size === 0) {
+                    if (pdfType === 'scanned' && !ocrEnabled) {
+                        throw new Error('Both pdf2docx and LibreOffice fallback produced no output: scanned PDF has no text layer and OCR is disabled (PDF_DOCX_OCR=off)');
+                    }
                     throw new Error('Both pdf2docx and LibreOffice fallback produced no output');
                 }
             }

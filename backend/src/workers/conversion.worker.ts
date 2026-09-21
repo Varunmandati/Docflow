@@ -24,6 +24,7 @@ import { PdfToDocxEngine } from '../services/converters/PdfToDocxEngine.js';
 import { ConverterEngine, EngineConversionResult } from '../services/converters/ConverterEngine.js';
 import { applyPdfOptions } from '../services/pdf-postprocess.service.js';
 import { SandboxRunner } from '../utils/sandboxRunner.js';
+import { withHeavyJobLock } from '../utils/heavyJobLock.js';
 
 const toDownloadUrl = (relativePath: string) => `/v1/files/download?path=${encodeURIComponent(relativePath)}`;
 
@@ -31,6 +32,7 @@ const OFFICE_FORMATS = new Set(['doc', 'docx', 'odt', 'rtf', 'txt', 'html', 'md'
 // Raster sources Sharp cannot read natively (no libvips loader): these are
 // rasterized via LibreOffice -> PDF, then PDF -> images.
 const LO_RASTER_SOURCES = new Set(['bmp']);
+const HEAVY_ENGINE_NAMES = new Set(['LibreOffice', 'Ffmpeg', 'PdfToDocx', 'PdfToDocxLayout']);
 
 const ENGINES: ConverterEngine[] = [
     // Conditionally load the PDF->DOCX engine based on feature flag
@@ -124,7 +126,7 @@ export function startConversionWorker(): Worker<ConversionJobData> {
 
             if ((OFFICE_FORMATS.has(sourceFormat) || LO_RASTER_SOURCES.has(sourceFormat)) && ['jpg', 'png'].includes(targetFormat)) {
                 const libreOffice = new LibreOfficeEngine();
-                const pdfResult = await libreOffice.convert(inputPath, workspace.outputDir, sourceFormat, 'pdf', options);
+                const pdfResult = await withHeavyJobLock(() => libreOffice.convert(inputPath, workspace.outputDir, sourceFormat, 'pdf', options));
                 imagePaths = await convertPdfToImages(
                     pdfResult.outputPath,
                     workspace.outputDir,
@@ -134,7 +136,7 @@ export function startConversionWorker(): Worker<ConversionJobData> {
             } else if (LO_RASTER_SOURCES.has(sourceFormat) && targetFormat === 'webp') {
                 // bmp/ico -> pdf via LibreOffice, then pdf -> webp via PdfEngine.
                 const libreOffice = new LibreOfficeEngine();
-                const pdfResult = await libreOffice.convert(inputPath, workspace.outputDir, sourceFormat, 'pdf', options);
+                const pdfResult = await withHeavyJobLock(() => libreOffice.convert(inputPath, workspace.outputDir, sourceFormat, 'pdf', options));
                 const pdfEngine = new PdfEngine();
                 resultInfo = await pdfEngine.convert(pdfResult.outputPath, workspace.outputDir, 'pdf', 'webp', options);
             } else if (['avif', 'heic', 'heif'].includes(sourceFormat) && targetFormat === 'pdf') {
@@ -144,7 +146,7 @@ export function startConversionWorker(): Worker<ConversionJobData> {
                 const pngEngine = sourceFormat === 'avif' ? new SharpEngine() : new HeicEngine();
                 const pngResult = await pngEngine.convert(inputPath, workspace.outputDir, sourceFormat, 'png', options);
                 const libreOffice = new LibreOfficeEngine();
-                resultInfo = await libreOffice.convert(pngResult.outputPath, workspace.outputDir, 'png', 'pdf', options);
+                resultInfo = await withHeavyJobLock(() => libreOffice.convert(pngResult.outputPath, workspace.outputDir, 'png', 'pdf', options));
                 await fs.rm(pngResult.outputPath, { force: true }).catch(() => {});
             } else {
                 const engine = ENGINES.find(e => e.canHandle(sourceFormat, targetFormat));
@@ -156,7 +158,11 @@ export function startConversionWorker(): Worker<ConversionJobData> {
                     progress: 25,
                     message: `Converting using ${engine.name}.`,
                 });
-                resultInfo = await engine.convert(inputPath, workspace.outputDir, sourceFormat, targetFormat, options);
+                if (HEAVY_ENGINE_NAMES.has(engine.name)) {
+                    resultInfo = await withHeavyJobLock(() => engine.convert(inputPath, workspace.outputDir, sourceFormat, targetFormat, options));
+                } else {
+                    resultInfo = await engine.convert(inputPath, workspace.outputDir, sourceFormat, targetFormat, options);
+                }
             }
 
             const buildRef = async (filePath: string, pageCount?: number): Promise<OutputFileRef & { pageCount?: number }> => {

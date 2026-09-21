@@ -50,7 +50,7 @@ export async function buildServer() {
     await app.register(multipart, {
         limits: {
             // Keep higher limits specifically for file uploads
-            fileSize: 100 * 1024 * 1024, // 100MB
+            fileSize: env.MAX_UPLOAD_BYTES,
         },
     });
 
