@@ -231,13 +231,24 @@ export class PdfToDocxEngine implements ConverterEngine {
 
     /** Run the pdf2docx Python script as a subprocess. */
     private async runPdf2docx(inputPath: string, outputPath: string): Promise<void> {
-        const scriptPath = path.resolve(process.cwd(), 'scripts', 'pdf_to_docx_v2.py');
+        const candidates = [
+            path.resolve(process.cwd(), 'scripts', 'pdf_to_docx_v2.py'),
+            path.resolve(process.cwd(), 'backend', 'scripts', 'pdf_to_docx_v2.py'),
+            path.resolve(__dirname, '../../scripts/pdf_to_docx_v2.py'),
+        ];
+        let scriptPath: string | null = null;
+        for (const candidate of candidates) {
+            try {
+                await fs.access(candidate);
+                scriptPath = candidate;
+                break;
+            } catch {
+                // continue to next candidate
+            }
+        }
 
-        // Verify script exists
-        try {
-            await fs.access(scriptPath);
-        } catch {
-            throw new Error(`pdf2docx converter script not found at ${scriptPath}`);
+        if (!scriptPath) {
+            throw new Error(`pdf2docx converter script not found in [${candidates.join(', ')}]`);
         }
 
         await SandboxRunner.execute(PYTHON_BIN, [
