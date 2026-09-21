@@ -61,5 +61,10 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
+      # Firebase Private Key (Alternative if not using FIREBASE_SERVICE_ACCOUNT JSON).
+      # NOTE: In the Render Dashboard, private keys contain newlines. Either paste multiline PEM
+      # string directly into the value field or wrap single-line escaped \n in quotes.
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
       - key: GEMINI_API_KEY
         sync: false

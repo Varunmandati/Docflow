@@ -43,8 +43,8 @@ Deploying on free infrastructure entails specific operational constraints:
    - **Health Check**: Fast, unauthenticated `GET /health` endpoint responds with HTTP 200 without touching Postgres or Redis.
 
 5. **External Redis Quota vs. Local Redis**:
-   - Upstash Free provides 500,000 commands/month. BullMQ workers polling at 1–2 commands per second can exhaust this quota within days.
-   - **Solution**: Set `LOCAL_REDIS=true`. The container starts a local `redis-server` (capped at 64 MB, policy `noeviction`, no disk persistence) before the Node process boots.
+   - Upstash Free provides **500,000 commands/month** (not 10,000/day). However, BullMQ worker polling even every few seconds can generate over 1,000,000 commands/month if unthrottled, exhausting the 500K quota within 2–3 weeks.
+   - **Solution**: Set `LOCAL_REDIS=true`. The container starts a local `redis-server` (capped at 64 MB, policy `noeviction`, no disk persistence) before the Node process boots, incurring 0 external commands.
 
 6. **Database Migrations on Pooled Neon**:
    - PostgreSQL migrations that create tables or execute transactional DDL can conflict with PgBouncer connection poolers.
@@ -63,8 +63,9 @@ Deploying on free infrastructure entails specific operational constraints:
      - **Direct connection string** (unpooled): Use for `DATABASE_URL_DIRECT`.
 
 2. **Email API (Resend.com)**:
-   - Sign up at [resend.com](https://resend.com) and create an API key.
-   - Set `EMAIL_TRANSPORT=resend`, `RESEND_API_KEY=re_...`, and `EMAIL_FROM=DocFlow <onboarding@resend.dev>` (or your verified domain).
+   - Sign up at [resend.com](https://resend.com) and generate an API key.
+   - **CRITICAL**: By default, Resend's sandbox address `onboarding@resend.dev` can **ONLY deliver emails to the account owner's registration address**. To send OTP verification emails to arbitrary real users in production, you **must add and verify a custom sending domain** in the Resend dashboard (via DNS SPF/DKIM records) and set `EMAIL_FROM=DocFlow <noreply@yourdomain.com>`.
+   - Set `EMAIL_TRANSPORT=resend`, `RESEND_API_KEY=re_...`, and `EMAIL_FROM` accordingly.
 
 3. **Firebase Authentication**:
    - Go to the Firebase Console -> Project Settings -> Service Accounts.
@@ -112,26 +113,25 @@ Deploying on free infrastructure entails specific operational constraints:
    - `RATE_LIMIT_EXPENSIVE_FALLBACK=memory`
    - `FIREBASE_SERVICE_ACCOUNT=<Minified JSON>`
    - `CORS_ORIGIN=https://<your-vercel-domain>.vercel.app`
-4. Click **Deploy**. Note the URL (e.g. `https://docflow-backend.onrender.com`).
 
 ---
+ 
+### 🚀 Strict 3-Stage Deployment Order:
 
-### Step 3: Deploy Frontend to Vercel
+1. **Stage 1 — Deploy Render Backend First**:
+   - Deploy your Web Service on Render using `render.yaml` or Docker.
+   - For initial deployment, you can set `CORS_ORIGIN=*` or leave it empty so it accepts requests while configuring the frontend.
+   - Once the build succeeds and health checks pass, copy your live backend URL (e.g. `https://docflow-backend.onrender.com`).
 
-1. Log in to [Vercel.com](https://vercel.com).
-2. Click **Add New** -> **Project** and select your DocFlow repository.
-3. Vercel auto-detects Vite. The included `vercel.json` ensures all route requests rewrite to `index.html`.
-4. In **Environment Variables**, add:
-   - `VITE_API_URL`: `https://docflow-backend.onrender.com`
-   - `VITE_API_BASE_URL`: `https://docflow-backend.onrender.com`
-   - `VITE_FIREBASE_API_KEY`: `<Your Firebase Web API Key>`
-   - `VITE_FIREBASE_AUTH_DOMAIN`: `<Your Project>.firebaseapp.com`
-   - `VITE_FIREBASE_PROJECT_ID`: `<Your Project ID>`
-   - `VITE_FIREBASE_STORAGE_BUCKET`: `<Your Project>.appspot.com`
-   - `VITE_FIREBASE_MESSAGING_SENDER_ID`: `<Sender ID>`
-   - `VITE_FIREBASE_APP_ID`: `<App ID>`
-5. Click **Deploy**.
-6. Once deployed, copy your production Vercel URL and update `CORS_ORIGIN` in the Render dashboard.
+2. **Stage 2 — Deploy Vercel Frontend Second**:
+   - Deploy your frontend repository on Vercel.
+   - In Vercel Environment Variables, set `VITE_API_URL` and `VITE_API_BASE_URL` to your live Render backend URL from Stage 1.
+   - Deploy and copy your production Vercel frontend URL (e.g. `https://docflow-app.vercel.app`).
+
+3. **Stage 3 — Lock Down CORS_ORIGIN on Render**:
+   - Return to the Render Dashboard -> Environment tab.
+   - Update `CORS_ORIGIN` to your exact production Vercel frontend URL (e.g. `https://docflow-app.vercel.app`).
+   - Save changes (Render will trigger an instant zero-downtime config reload), securing your API against unauthorized origins.
 
 ---
 

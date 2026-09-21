@@ -53,7 +53,7 @@ const EnvSchema = z.object({
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
     GEMINI_API_KEY: z.string().optional(),
-    BULLMQ_DRAIN_DELAY_SEC: z.coerce.number().int().positive().default(5),
+    BULLMQ_DRAIN_DELAY_SEC: z.coerce.number().int().min(0).default(5),
     BULLMQ_STALLED_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
     RATE_LIMIT_EXPENSIVE_FALLBACK: z.enum(['open', 'memory']).default('open'),
     TRUST_PROXY: z.string().default('false'),
@@ -62,12 +62,23 @@ const EnvSchema = z.object({
     RUN_MIGRATIONS_ON_START: z.string().default('false'),
 });
 
+function parseTrustProxy(val: string): boolean | string | ((address: string, hop: number) => boolean) {
+    const trimmed = val.trim();
+    if (trimmed.toLowerCase() === 'true') return true;
+    if (trimmed.toLowerCase() === 'false' || trimmed === '') return false;
+    const num = Number(trimmed);
+    if (!Number.isNaN(num) && Number.isInteger(num) && num >= 0) {
+        return (_address: string, hop: number): boolean => hop < num;
+    }
+    return trimmed;
+}
+
 const parsed = EnvSchema.parse(process.env);
 
 export const env = {
     ...parsed,
     RUN_INLINE_WORKERS: parsed.RUN_INLINE_WORKERS === 'true',
     RUN_MIGRATIONS_ON_START: parsed.RUN_MIGRATIONS_ON_START === 'true',
-    TRUST_PROXY: parsed.TRUST_PROXY === 'true',
+    TRUST_PROXY: parseTrustProxy(parsed.TRUST_PROXY),
     STORAGE_ROOT: path.resolve(process.cwd(), parsed.STORAGE_ROOT),
 };
