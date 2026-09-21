@@ -26,10 +26,10 @@ const transporter = nodemailer.createTransport({
     host: env.SMTP_HOST,
     port: smtpPort,
     secure: smtpPort === 465, // STARTTLS on 587/2525, implicit TLS on 465
-    auth: {
+    auth: (env.SMTP_USER && env.SMTP_PASS) ? {
         user: env.SMTP_USER.trim(),
         pass: env.SMTP_PASS.trim(),
-    },
+    } : undefined,
     tls: {
         rejectUnauthorized: false,
         // Force TLS 1.2 minimum
@@ -42,19 +42,65 @@ const transporter = nodemailer.createTransport({
     pool: false,
 } as any);
 
-// Verify on startup (non-blocking — just logs)
-transporter.verify()
-    .then(() => console.log(`[Email] ✅ SMTP verified successfully (user: ${env.SMTP_USER}, host: ${env.SMTP_HOST}:${smtpPort})`))
-    .catch((err: Error) => console.error('[Email] ❌ SMTP verification FAILED:', err.message, '— emails will NOT send'));
+// Verify on startup (non-blocking — just logs) only when using SMTP transport
+if (env.EMAIL_TRANSPORT === 'smtp' && env.SMTP_USER && env.SMTP_PASS) {
+    transporter.verify()
+        .then(() => console.log(`[Email] ✅ SMTP verified successfully (user: ${env.SMTP_USER}, host: ${env.SMTP_HOST}:${smtpPort})`))
+        .catch((err: Error) => console.error('[Email] ❌ SMTP verification FAILED:', err.message, '— emails will NOT send'));
+}
 
 /**
  * Send an email with a hard timeout.
- * If nodemailer hangs (firewall, DNS, etc.), this rejects after timeoutMs.
+ * If sending hangs (network, DNS, etc.), this rejects after timeoutMs.
  */
 export async function sendMailWithTimeout(
     mailOptions: Mail.Options,
     timeoutMs: number = 12000
 ): Promise<any> {
+    if (env.EMAIL_TRANSPORT === 'resend') {
+        const resendKey = env.RESEND_API_KEY;
+        if (!resendKey) {
+            throw new Error('RESEND_API_KEY is required for resend transport');
+        }
+        const from = env.EMAIL_FROM || (mailOptions.from as string) || env.SMTP_FROM || 'DocFlow <noreply@docflow.example.com>';
+
+        const toList = Array.isArray(mailOptions.to)
+            ? mailOptions.to.map(String)
+            : typeof mailOptions.to === 'string'
+            ? [mailOptions.to]
+            : [];
+
+        const body: Record<string, any> = {
+            from,
+            to: toList,
+            subject: mailOptions.subject || '',
+        };
+        if (mailOptions.html) body.html = mailOptions.html;
+        if (mailOptions.text) body.text = mailOptions.text;
+
+        return Promise.race([
+            fetch('https://api.resend.com/emails', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${resendKey}`,
+                },
+                body: JSON.stringify(body),
+            }).then(async (res) => {
+                if (!res.ok) {
+                    const errorText = await res.text().catch(() => '');
+                    throw new Error(`Resend API error (${res.status}): ${errorText}`);
+                }
+                return res.json();
+            }),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(
+                    `Email send timed out (Resend HTTPS) after ${timeoutMs / 1000}s.`
+                )), timeoutMs)
+            ),
+        ]);
+    }
+
     return Promise.race([
         transporter.sendMail(mailOptions),
         new Promise((_, reject) =>
