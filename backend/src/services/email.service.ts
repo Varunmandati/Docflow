@@ -86,6 +86,7 @@ export async function sendMailWithTimeout(
                     'Authorization': `Bearer ${resendKey}`,
                 },
                 body: JSON.stringify(body),
+                signal: AbortSignal.timeout(timeoutMs),
             }).then(async (res) => {
                 if (!res.ok) {
                     const errorText = await res.text().catch(() => '');

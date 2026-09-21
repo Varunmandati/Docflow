@@ -431,20 +431,20 @@ export async function filesRoutes(app: FastifyInstance) {
         const user = await extractFirebaseUser(request as any);
         const uid = user?.uid || null;
 
-        let absolutePath: string;
-        try {
-            absolutePath = resolveStoragePath(query.path);
-            await fsPromises.access(absolutePath);
-        } catch {
-            return reply.code(404).send({ message: 'Artifact file not found.' });
-        }
-
         // Ownership gate: only artifacts under a job owned by this user are
         // downloadable. Prevents any authenticated user reading other users'
         // conversion/compression outputs by guessing storage paths.
         const owned = await assertArtifactOwned(uid, query.path);
         if (!owned) {
             return reply.code(403).send({ message: 'You do not have access to this artifact.' });
+        }
+
+        let absolutePath: string;
+        try {
+            absolutePath = resolveStoragePath(query.path);
+            await fsPromises.access(absolutePath);
+        } catch {
+            return reply.code(404).send({ message: 'Artifact file not found.' });
         }
 
         const stats = await fsPromises.stat(absolutePath);
