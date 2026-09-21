@@ -6,8 +6,36 @@ import { logger } from '../config/logger.js';
 import { auditService } from '../services/audit.service.js';
 import { env } from '../config/env.js';
 
+// Cleans up orphaned uploads and temp files older than ARTIFACT_TTL_MINUTES
+export async function cleanupTempUploads() {
+  const maxAgeMs = env.ARTIFACT_TTL_MINUTES * 60 * 1000;
+  const now = Date.now();
+  const dirsToClean = [
+    path.join(env.STORAGE_ROOT, 'uploads'),
+    path.join(env.STORAGE_ROOT, 'temp'),
+  ];
+
+  for (const dir of dirsToClean) {
+    try {
+      const entries = await fs.readdir(dir).catch(() => []);
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry);
+        try {
+          const stat = await fs.stat(fullPath);
+          if (now - stat.mtimeMs > maxAgeMs) {
+            await fs.rm(fullPath, { recursive: true, force: true }).catch(() => {});
+          }
+        } catch {}
+      }
+    } catch (err: any) {
+      logger.warn({ dir, err: err.message }, 'Failed to scan directory during temp uploads cleanup');
+    }
+  }
+}
+
 // Runs every hour — marks expired jobs, triggers file deletion
 export async function cleanupExpiredJobs() {
+  await cleanupTempUploads();
   try {
     const result = await workerPool.query(`
       SELECT id, storage_path FROM jobs

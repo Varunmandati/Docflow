@@ -57,6 +57,7 @@ const EnvSchema = z.object({
     BULLMQ_STALLED_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
     RATE_LIMIT_EXPENSIVE_FALLBACK: z.enum(['open', 'memory']).default('open'),
     TRUST_PROXY: z.string().default('false'),
+    ARTIFACT_TTL_MINUTES: z.coerce.number().int().positive().default(10080),
 });
 
 const parsed = EnvSchema.parse(process.env);

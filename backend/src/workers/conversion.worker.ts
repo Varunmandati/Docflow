@@ -227,7 +227,7 @@ export function startConversionWorker(): Worker<ConversionJobData> {
             await setJobResult(jobId, result);
 
             const downloadToken = crypto.randomBytes(32).toString('hex');
-            const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+            const expiresAt = new Date(Date.now() + env.ARTIFACT_TTL_MINUTES * 60 * 1000);
 
             await updateJobStatus(jobId, {
                 status: 'completed',

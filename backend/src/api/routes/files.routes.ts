@@ -473,6 +473,11 @@ export async function filesRoutes(app: FastifyInstance) {
         }
 
         const absolutePath = resolveStoragePath(job.storage_path);
+        try {
+            await fsPromises.access(absolutePath);
+        } catch {
+            return reply.code(404).send({ message: 'File not found or link expired.' });
+        }
         const contentType = mime.lookup(absolutePath) || 'application/octet-stream';
         const fileName = job.output_filename || path.basename(absolutePath);
 
