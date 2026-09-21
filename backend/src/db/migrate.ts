@@ -23,7 +23,7 @@ function getMigrationsDir(): string {
 }
 
 export async function runMigrations() {
-  const migrationUrl = process.env.DATABASE_URL_DIRECT || process.env.POSTGRES_ADMIN_URL || process.env.DATABASE_URL;
+  const migrationUrl = process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL || process.env.POSTGRES_ADMIN_URL;
   if (!migrationUrl) {
     throw new Error('DATABASE_URL_DIRECT, POSTGRES_ADMIN_URL, or DATABASE_URL is required for migrations');
   }
