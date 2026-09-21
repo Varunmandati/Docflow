@@ -58,6 +58,8 @@ const EnvSchema = z.object({
     RATE_LIMIT_EXPENSIVE_FALLBACK: z.enum(['open', 'memory']).default('open'),
     TRUST_PROXY: z.string().default('false'),
     ARTIFACT_TTL_MINUTES: z.coerce.number().int().positive().default(10080),
+    DATABASE_URL_DIRECT: z.string().url().optional(),
+    RUN_MIGRATIONS_ON_START: z.string().default('false'),
 });
 
 const parsed = EnvSchema.parse(process.env);
@@ -65,6 +67,7 @@ const parsed = EnvSchema.parse(process.env);
 export const env = {
     ...parsed,
     RUN_INLINE_WORKERS: parsed.RUN_INLINE_WORKERS === 'true',
+    RUN_MIGRATIONS_ON_START: parsed.RUN_MIGRATIONS_ON_START === 'true',
     TRUST_PROXY: parsed.TRUST_PROXY === 'true',
     STORAGE_ROOT: path.resolve(process.cwd(), parsed.STORAGE_ROOT),
 };

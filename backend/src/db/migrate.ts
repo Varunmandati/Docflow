@@ -3,17 +3,37 @@ dotenv.config();
 
 import pg from 'pg';
 import { readdir, readFile } from 'fs/promises';
-import { join } from 'path';
-const MIGRATIONS_DIR = join(process.cwd(), 'src', 'db', 'migrations');
+import fs from 'fs';
+import { join, resolve } from 'path';
 
 const { Pool } = pg;
 
-const ADMIN_URL = process.env.POSTGRES_ADMIN_URL;
-if (!ADMIN_URL) throw new Error('POSTGRES_ADMIN_URL is required for migrations');
+function getMigrationsDir(): string {
+  const candidates = [
+    join(process.cwd(), 'src', 'db', 'migrations'),
+    join(process.cwd(), 'backend', 'src', 'db', 'migrations'),
+    resolve(__dirname, 'migrations'),
+    resolve(__dirname, '../../src/db/migrations'),
+    resolve(__dirname, '../../../src/db/migrations'),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) return dir;
+  }
+  return join(process.cwd(), 'src', 'db', 'migrations');
+}
 
-const pool = new Pool({ connectionString: ADMIN_URL });
+export async function runMigrations() {
+  const migrationUrl = process.env.DATABASE_URL_DIRECT || process.env.POSTGRES_ADMIN_URL || process.env.DATABASE_URL;
+  if (!migrationUrl) {
+    throw new Error('DATABASE_URL_DIRECT, POSTGRES_ADMIN_URL, or DATABASE_URL is required for migrations');
+  }
 
-async function runMigrations() {
+  const pool = new Pool({
+    connectionString: migrationUrl,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+  });
+
+  const migrationsDir = getMigrationsDir();
   const client = await pool.connect();
   try {
     // Create migration tracking table
@@ -24,7 +44,7 @@ async function runMigrations() {
       )
     `);
 
-    const files = (await readdir(MIGRATIONS_DIR))
+    const files = (await readdir(migrationsDir))
       .filter(f => f.endsWith('.sql'))
       .sort(); // alphabetical = chronological (001_, 002_, etc.)
 
@@ -37,7 +57,7 @@ async function runMigrations() {
 
       if (existing.rows.length === 0) {
         console.log(`Applying migration: ${file}`);
-        const sql = await readFile(join(MIGRATIONS_DIR, file), 'utf-8');
+        const sql = await readFile(join(migrationsDir, file), 'utf-8');
         await client.query('BEGIN');
         try {
           await client.query(sql);
@@ -62,7 +82,14 @@ async function runMigrations() {
   }
 }
 
-runMigrations().catch(err => {
-  console.error('Migration failed:', err);
-  process.exit(1);
-});
+// Only auto-run if executed directly from CLI (e.g. `npm run migrate` or `tsx src/db/migrate.ts`)
+const isDirectCliExecution =
+  process.argv[1] &&
+  (process.argv[1].endsWith('migrate.ts') || process.argv[1].endsWith('migrate.js'));
+
+if (isDirectCliExecution) {
+  runMigrations().catch(err => {
+    console.error('Migration failed:', err);
+    process.exit(1);
+  });
+}
