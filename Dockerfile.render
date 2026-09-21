@@ -1,0 +1,71 @@
+FROM node:20-bookworm AS base
+WORKDIR /app
+
+# --- Build backend ---
+COPY backend/package*.json ./backend/
+RUN cd backend && npm ci
+COPY backend ./backend
+RUN cd backend && npm run build
+
+# --- Build streamtor ---
+COPY streamtor/package*.json ./streamtor/
+RUN cd streamtor && npm ci
+COPY streamtor ./streamtor
+RUN cd streamtor && npm run build
+
+# --- Runtime stage ---
+FROM node:20-bookworm-slim
+WORKDIR /app
+
+# Install only essential conversion dependencies for Render free tier (512MB RAM)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    libreoffice-nogui \
+    poppler-utils \
+    ghostscript \
+    ffmpeg \
+    redis-server \
+    python3 \
+    python3-venv \
+    fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-dejavu-core \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Setup lightweight Python venv for pdf2docx
+RUN python3 -m venv /opt/pdf2docx-venv && \
+    /opt/pdf2docx-venv/bin/pip install --no-cache-dir pdf2docx
+ENV PDF_DOCX_PYTHON=/opt/pdf2docx-venv/bin/python3
+
+# Copy pre-built backend and streamtor code
+COPY --from=base /app/backend ./backend
+COPY --from=base /app/streamtor ./streamtor
+
+# Install production-only dependencies
+RUN cd backend && npm ci --omit=dev
+RUN cd streamtor && npm ci --omit=dev
+RUN npm install -g concurrently
+
+# Copy start script
+COPY start-render.sh ./start-render.sh
+RUN chmod +x ./start-render.sh
+
+# Ensure storage directories exist with node ownership
+RUN mkdir -p /app/backend/storage/uploads /app/backend/storage/jobs /app/backend/storage/temp && \
+    chown -R node:node /app
+
+# Switch to unprivileged user
+USER node
+
+# Health check against /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 8080) + '/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
+
+EXPOSE 8080
+ENV PORT=8080
+ENV HOST=0.0.0.0
+
+CMD ["./start-render.sh"]
