@@ -1,21 +1,39 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { redisConnection } from '../queue/connection.js';
 import crypto from 'crypto';
+import { env } from '../config/env.js';
+
+// In-process fallback store for when Redis errors and RATE_LIMIT_EXPENSIVE_FALLBACK === 'memory'
+const inMemoryRateLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+function checkInMemoryFallback(key: string, limit: number, windowSeconds: number): boolean {
+    const now = Date.now();
+    const record = inMemoryRateLimitStore.get(key);
+    if (!record || record.resetAt <= now) {
+        inMemoryRateLimitStore.set(key, { count: 1, resetAt: now + windowSeconds * 1000 });
+        return true;
+    }
+    if (record.count >= limit) {
+        return false;
+    }
+    record.count++;
+    return true;
+}
 
 /**
  * Rate limiting middleware - limit requests per IP
  *
- * Fail-open on Redis errors: if the rate-limit store is unreachable, the
- * request is allowed through (with a warning) instead of failing with a 500.
- * This keeps every API route usable even when Redis is down, at the cost of
- * rate-limit enforcement during that window. Normal operation still enforces
- * the configured limits.
+ * Fail-open on Redis errors by default: if the rate-limit store is unreachable,
+ * the request is allowed through (with a warning) instead of failing with a 500.
+ * If RATE_LIMIT_EXPENSIVE_FALLBACK is set to 'memory', expensive endpoints
+ * fallback to an in-process memory limiter so heavy endpoints cannot be abused.
  */
 export async function rateLimitMiddleware(
     request: FastifyRequest,
     reply: FastifyReply,
     limit: number = 100,
-    windowSeconds: number = 60
+    windowSeconds: number = 60,
+    isExpensive: boolean = false
 ) {
     const ip = request.ip || 'unknown';
     const key = `rate_limit:${ip}`;
@@ -27,6 +45,16 @@ export async function rateLimitMiddleware(
             await redisConnection.expire(key, windowSeconds);
         }
     } catch (err) {
+        if (env.RATE_LIMIT_EXPENSIVE_FALLBACK === 'memory' && isExpensive) {
+            const allowed = checkInMemoryFallback(key, limit, windowSeconds);
+            if (!allowed) {
+                return reply.code(429).send({
+                    success: false,
+                    message: `Rate limit exceeded. Maximum ${limit} requests per ${windowSeconds} seconds.`,
+                });
+            }
+            return;
+        }
         console.warn(`[rate-limit] Redis unavailable, allowing request through: ${(err as Error).message}`);
         return;
     }
@@ -68,31 +96,38 @@ export function setupRateLimitedRoutes(app: FastifyInstance) {
     const matchRoute = (request: FastifyRequest, route: string) =>
         request.routeOptions.url === route;
 
-    // Rate limit conversion uploads: 20 per 5 minutes per IP
+    // Rate limit conversion uploads: 20 per 5 minutes per IP (expensive)
     app.addHook('onRequest', async (request, reply) => {
         if (matchRoute(request, '/v1/files/upload') && request.method === 'POST') {
-            await rateLimitMiddleware(request, reply, 20, 300);
+            await rateLimitMiddleware(request, reply, 20, 300, true);
         }
     });
 
-    // Rate limit compression: 50 per 10 minutes per IP
+    // Rate limit compression: 50 per 10 minutes per IP (expensive)
     app.addHook('onRequest', async (request, reply) => {
         if (matchRoute(request, '/v1/compress') && request.method === 'POST') {
-            await rateLimitMiddleware(request, reply, 50, 600);
+            await rateLimitMiddleware(request, reply, 50, 600, true);
         }
     });
 
-    // Rate limit single-file conversions: 30 per 10 minutes per IP
+    // Rate limit single-file conversions: 30 per 10 minutes per IP (expensive)
     app.addHook('onRequest', async (request, reply) => {
         if (matchRoute(request, '/v1/convert') && request.method === 'POST') {
-            await rateLimitMiddleware(request, reply, 30, 600);
+            await rateLimitMiddleware(request, reply, 30, 600, true);
         }
     });
 
-    // Rate limit batch image combine-to-pdf: 20 per 10 minutes per IP
+    // Rate limit batch image combine-to-pdf: 20 per 10 minutes per IP (expensive)
     app.addHook('onRequest', async (request, reply) => {
         if (matchRoute(request, '/v1/images/combine-to-pdf') && request.method === 'POST') {
-            await rateLimitMiddleware(request, reply, 20, 600);
+            await rateLimitMiddleware(request, reply, 20, 600, true);
+        }
+    });
+
+    // Rate limit AI suggestion: 30 per 10 minutes per IP (expensive)
+    app.addHook('onRequest', async (request, reply) => {
+        if (matchRoute(request, '/v1/ai/suggest-filename') && request.method === 'POST') {
+            await rateLimitMiddleware(request, reply, 30, 600, true);
         }
     });
 

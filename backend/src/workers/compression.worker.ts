@@ -190,6 +190,8 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
         {
             connection: redisConnection,
             concurrency: Math.max(1, Math.floor(env.WORKER_CONCURRENCY / 2) || 1),
+            drainDelay: env.BULLMQ_DRAIN_DELAY_SEC,
+            stalledInterval: env.BULLMQ_STALLED_INTERVAL_MS,
         }
     );
 

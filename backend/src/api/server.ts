@@ -15,6 +15,7 @@ export async function buildServer() {
         logger: false,
         // Secure JSON body limit for general requests
         bodyLimit: 2 * 1024 * 1024, // 2MB
+        trustProxy: env.TRUST_PROXY,
     });
 
     // Security headers
