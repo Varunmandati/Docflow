@@ -8,6 +8,7 @@ import { startCleanupWorker } from './workers/cleanup.worker.js';
 import { initializeFirebaseAdmin } from './config/firebase.js';
 import { closeDatabaseConnections } from './db/client.js';
 import { redis } from './queue/connection.js';
+import { runMigrations } from './db/migrate.js';
 
 let shuttingDown = false;
 
@@ -27,6 +28,11 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 async function startApi() {
+    if (env.RUN_MIGRATIONS_ON_START) {
+        logger.info('RUN_MIGRATIONS_ON_START is enabled — running database migrations');
+        await runMigrations();
+        logger.info('Database migrations finished');
+    }
     initializeFirebaseAdmin();
     await ensureStorageLayout();
 

@@ -4,6 +4,14 @@ import { redisConnection } from '../../queue/connection.js';
 import { conversionQueue, compressionQueue } from '../../queue/queues.js';
 
 export async function healthRoutes(app: FastifyInstance) {
+    // Lightweight liveness/warmup check: no DB or Redis calls, returns 200 immediately
+    app.get('/health', async (_request, reply) => {
+        return reply.code(200).send({
+            status: 'ok',
+            timestamp: new Date().toISOString(),
+        });
+    });
+
     app.get('/v1/health', async (request, reply) => {
         const timeout = (ms: number) => new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
 
