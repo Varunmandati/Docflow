@@ -255,6 +255,8 @@ export function startConversionWorker(): Worker<ConversionJobData> {
         {
             connection: redisConnection,
             concurrency: env.WORKER_CONCURRENCY,
+            drainDelay: env.BULLMQ_DRAIN_DELAY_SEC,
+            stalledInterval: env.BULLMQ_STALLED_INTERVAL_MS,
         }
     );
 
