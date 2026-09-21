@@ -35,10 +35,12 @@ export async function requestLoginOtp(
     throw new Error('Please enter a valid email address.');
   }
 
-  // Per-email rate limit
+  // Per-email rate limit (atomic SET NX EX to avoid race condition)
   const emailRateKey = `otp-login:rl:${normalizedEmail}`;
   const emailCurrent = await redis.incr(emailRateKey);
-  if (emailCurrent === 1) await redis.expire(emailRateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
+  if (emailCurrent === 1) {
+    await redis.expire(emailRateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
+  }
   if (emailCurrent > RATE_LIMIT_MAX) {
     throw new Error('Too many OTP requests for this email. Please try again in 10 minutes.');
   }

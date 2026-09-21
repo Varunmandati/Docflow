@@ -17,7 +17,6 @@ const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = '
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialFilter === 'failed' ? 'failed' : initialFilter === 'success' ? 'success' : 'all');
     const [currentPage, setCurrentPage] = useState(1);
-    const isGlassEffect = document.documentElement.classList.contains('dark');
 
     const filteredHistory = useMemo(() => {
         let result = history;
@@ -53,12 +52,12 @@ const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = '
     };
 
     return (
-        <div className="p-4 sm:p-8 w-full">
-             <header className="mb-8">
+        <div className="p-4 sm:p-8 w-full max-w-6xl mx-auto">
+             <header className="view-header">
                 <div className="flex items-center gap-3">
-                    <h1 className="display-md" style={{ color: 'var(--text-primary)' }}>{t.title}</h1>
+                    <h1 className="display-md">{t.title}</h1>
                 </div>
-                <p className="body-sm mt-1" style={{ color: 'var(--text-secondary)' }}>View your past conversion and compression jobs</p>
+                <p className="body-sm mt-1">View your past conversion and compression jobs</p>
             </header>
 
             {/* Search and Filter Section */}
@@ -84,7 +83,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = '
                 />
             </div>
 
-            <div className="relative rounded-xl border border-[var(--border-color)] p-6 bg-[var(--background-card)] elevation-3">
+            <div className="relative panel-card p-6 elevation-3">
                 
                 {filteredHistory.length > 0 ? (
                     <>
@@ -169,7 +168,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = '
                                             <button
                                                 key={i}
                                                 onClick={() => setCurrentPage(i + 1)}
-                                                className={`w-8 h-8 flex items-center justify-center text-sm font-medium rounded-md transition-colors ${currentPage === i + 1 ? 'bg-[var(--text-primary)] text-[var(--background-card)]' : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text-primary)]'}`}
+                                                className={`w-8 h-8 flex items-center justify-center text-sm font-medium rounded-md transition-all duration-200 ${currentPage === i + 1 ? 'bg-[var(--primary-color)] text-[var(--primary-text)] shadow-[0_0_0_3px_var(--primary-highlight)]' : 'text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text-primary)]'}`}
                                             >
                                                 {i + 1}
                                             </button>

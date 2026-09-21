@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getJobResult, getJobStatus } from '../../services/job-state.service.js';
 import { jobService } from '../../services/job.service.js';
 import { conversionQueue, compressionQueue } from '../../queue/queues.js';
@@ -8,7 +8,7 @@ import { extractFirebaseUser, verifyFirebaseToken } from '../../middleware/fireb
 // Ownership guard: a job is only accessible to its owner (or anonymous jobs
 // which are only reachable via their bearer session). Uses RLS-scoped lookup
 // so one user can never read another user's job status, result, or preview.
-async function requireOwnedJob(app: FastifyInstance, request: any, reply: any, jobId: string): Promise<boolean> {
+async function requireOwnedJob(app: FastifyInstance, request: FastifyRequest, reply: FastifyReply, jobId: string): Promise<boolean> {
     const user = await extractFirebaseUser(request);
     const userId = user?.uid || null;
 
@@ -28,7 +28,7 @@ async function requireOwnedJob(app: FastifyInstance, request: any, reply: any, j
 
 export async function jobsRoutes(app: FastifyInstance) {
     app.get('/v1/jobs', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
-        const user = await extractFirebaseUser(request as any);
+        const user = await extractFirebaseUser(request);
         const userId = user?.uid || null;
 
         if (!userId) {
@@ -67,7 +67,7 @@ export async function jobsRoutes(app: FastifyInstance) {
 
     app.get('/v1/jobs/:jobId', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
         const params = request.params as { jobId: string };
-        const owned = await requireOwnedJob(app, request as any, reply, params.jobId);
+        const owned = await requireOwnedJob(app, request, reply, params.jobId);
         if (!owned) return reply;
 
         const [status, conversionJob, compressionJob] = await Promise.all([
@@ -82,7 +82,7 @@ export async function jobsRoutes(app: FastifyInstance) {
             return reply.code(404).send({ message: 'Job not found.' });
         }
 
-        const queueState = queueJob ? await (queueJob as any).getState() : 'unknown';
+        const queueState = queueJob ? await queueJob.getState() : 'unknown';
 
         return {
             ...status,
@@ -92,7 +92,7 @@ export async function jobsRoutes(app: FastifyInstance) {
 
     app.get('/v1/jobs/:jobId/result', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
         const params = request.params as { jobId: string };
-        const owned = await requireOwnedJob(app, request as any, reply, params.jobId);
+        const owned = await requireOwnedJob(app, request, reply, params.jobId);
         if (!owned) return reply;
 
         const [status, result] = await Promise.all([
@@ -117,7 +117,7 @@ export async function jobsRoutes(app: FastifyInstance) {
 
     app.get('/v1/previews/:jobId', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
         const params = request.params as { jobId: string };
-        const owned = await requireOwnedJob(app, request as any, reply, params.jobId);
+        const owned = await requireOwnedJob(app, request, reply, params.jobId);
         if (!owned) return reply;
 
         const result = await getJobResult(params.jobId);

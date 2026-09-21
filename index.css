@@ -1,152 +1,28 @@
-/* ── Binance & Glassy Button Core Stylesheet ── */
+/* ── DocFlow Refined Core Stylesheet ── */
 
-/* Monospace numeric voice fallback (BinancePlex) */
+/* Monospace numeric voice */
 .number-font, .stat-value, .percentage, .file-size, .progress-percentage, .caption-mono, .code-text {
-    font-family: 'JetBrains Mono', monospace !important;
+    font-family: var(--font-family-mono), monospace !important;
 }
 
-/* Glassy button animations */
-@keyframes glassy-shine {
-    0% {
-        left: -100%;
-    }
-    100% {
-        left: 150%;
-    }
+/* Legacy button classes (tokens defined in index.html) */
+.primary-btn, .glowing-btn, .secondary-btn, .outline-btn, .ghost-btn, .pill-btn {
+    /* declarations live in index.html token block */
 }
 
-/* Base glassy style for all buttons on the website */
-button:not(.no-glassy) {
-    position: relative;
-    overflow: hidden;
-    backdrop-filter: blur(10px) saturate(180%);
-    -webkit-backdrop-filter: blur(10px) saturate(180%);
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    border-radius: 9999px !important; /* Fully rounded corners / Pill-shaped */
-}
-
-/* Glassy shine effect on hover */
-button:not(.no-glassy):not(:disabled)::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 50%;
-    height: 100%;
-    background: linear-gradient(
-        90deg,
-        rgba(255, 255, 255, 0) 0%,
-        rgba(255, 255, 255, 0.25) 50%,
-        rgba(255, 255, 255, 0) 100%
-    );
-    transform: skewX(-25deg);
-    pointer-events: none;
-    z-index: 5;
-}
-
-button:not(.no-glassy):not(:disabled):hover::after {
-    animation: glassy-shine 0.75s ease-in-out forwards;
-}
-
-/* Primary Glassy Button (Binance Yellow Glass with Black Text) */
-.glowing-btn, .primary-btn {
-    background: linear-gradient(185deg, rgba(252, 213, 53, 0.85) 0%, rgba(240, 185, 11, 0.95) 100%) !important;
-    border: 1px solid rgba(252, 213, 53, 0.3) !important;
-    color: #181a20 !important;
-    font-family: 'Inter', sans-serif;
-    font-weight: 600;
-    box-shadow: 
-        0 4px 12px rgba(0, 0, 0, 0.15),
-        inset 0 1.5px 0.5px rgba(255, 255, 255, 0.45),
-        inset 0 -1px 2px rgba(0, 0, 0, 0.15) !important;
-}
-
-.glowing-btn:hover:not(:disabled), .primary-btn:hover:not(:disabled) {
-    background: linear-gradient(185deg, rgba(252, 213, 53, 0.95) 0%, rgba(240, 185, 11, 1) 100%) !important;
-    border-color: rgba(252, 213, 53, 0.6) !important;
-    box-shadow: 
-        0 6px 18px rgba(252, 213, 53, 0.22),
-        inset 0 1.5px 0.5px rgba(255, 255, 255, 0.6),
-        inset 0 -1px 2px rgba(0, 0, 0, 0.15) !important;
-}
-
-.glowing-btn:active:not(:disabled), .primary-btn:active:not(:disabled) {
-    transform: translateY(1px) scale(0.98) !important;
-    box-shadow: 
-        0 2px 6px rgba(0, 0, 0, 0.1),
-        inset 0 2px 4px rgba(0, 0, 0, 0.2) !important;
-}
-
-/* Secondary Glassy Button (Binance Surface Card / Translucent Gray Glass) */
-.secondary-btn {
-    background: linear-gradient(185deg, var(--background-secondary) 0%, var(--border-color) 100%) !important;
-    border: 1px solid var(--border-color) !important;
-    color: var(--text-primary) !important;
-    font-family: 'Inter', sans-serif;
-    font-weight: 600;
-    box-shadow: 
-        0 3px 8px rgba(0, 0, 0, 0.05),
-        inset 0 1.5px 0.5px rgba(255, 255, 255, 0.15),
-        inset 0 -1px 1px rgba(0, 0, 0, 0.08) !important;
-}
-
-.secondary-btn:hover:not(:disabled) {
-    background: var(--hover) !important;
-    border-color: var(--text-secondary) !important;
-    box-shadow: 
-        0 5px 12px rgba(0, 0, 0, 0.08),
-        inset 0 1.5px 0.5px rgba(255, 255, 255, 0.25),
-        inset 0 -1px 1px rgba(0, 0, 0, 0.08) !important;
-}
-
-/* Outline Glassy Button */
-.outline-btn {
-    background: rgba(255, 255, 255, 0.03) !important;
-    border: 1px solid var(--border-color) !important;
-    color: var(--text-primary) !important;
-    box-shadow: 
-        0 2px 4px rgba(0, 0, 0, 0.02),
-        inset 0 1px 1px rgba(255, 255, 255, 0.05) !important;
-}
-
-.outline-btn:hover:not(:disabled) {
-    background: var(--primary-highlight) !important;
-    border-color: var(--primary-color) !important;
-    box-shadow: 
-        0 4px 8px rgba(0, 0, 0, 0.05),
-        inset 0 1px 1.5px rgba(255, 255, 255, 0.1) !important;
-}
-
-/* Ghost Glassy Button */
-.ghost-btn {
-    background: transparent !important;
-    border: 1px solid transparent !important;
-    color: var(--text-primary) !important;
-}
-
-.ghost-btn:hover:not(:disabled) {
-    background: var(--hover) !important;
-    border-color: var(--border-color) !important;
-}
-
-/* Pill layout override */
-.pill-btn {
-    border-radius: 9999px !important;
-}
-
-/* Binance Card Surface Elevators */
+/* Card surfaces */
 .markets-table-card, .qr-promo-card, .trust-badge {
-    background-color: var(--background-card) !important;
-    border: 1px solid var(--border-color) !important;
-    border-radius: 12px !important; /* Binance rounded.xl */
+    background-color: var(--background-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
 }
 
 /* Premium dynamic theme-aware Footer closure */
 footer {
-    background-color: var(--background-main) !important;
-    color: var(--text-secondary) !important;
-    border-top: 1px solid var(--border-color) !important;
-    transition: background-color 200ms ease-out, border-color 200ms ease-out;
+    background-color: var(--background-main);
+    color: var(--text-secondary);
+    border-top: 1px solid var(--border-color);
+    transition: background-color 0.3s var(--ease-emphasized), border-color 0.3s var(--ease-emphasized);
 }
 
 /* Sidebar and Mobile Header logo icon support */
@@ -155,11 +31,45 @@ footer {
 }
 
 * {
-    transition: background-color 200ms ease-out, border-color 200ms ease-out, color 200ms ease-out, box-shadow 200ms ease-out;
     -webkit-font-smoothing: antialiased !important;
     -moz-osx-font-smoothing: grayscale !important;
     text-rendering: optimizeLegibility !important;
 }
+
+/* ================================================================
+   DASHBOARD FEATURE CARDS — tinted duotone tiles (theme-aware)
+   ================================================================ */
+.feature-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: 20px;
+    border: 1px solid var(--border-color);
+    background: var(--background-card);
+    transition: transform 0.4s var(--ease-emphasized), box-shadow 0.4s var(--ease-emphasized), border-color 0.3s var(--ease-emphasized);
+    cursor: pointer;
+}
+.feature-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 16px 40px rgba(var(--shadow-color), 0.12);
+    border-color: var(--border-hover);
+}
+.feature-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    opacity: 0.65;
+    pointer-events: none;
+}
+.feature-card-amber { border-color: rgba(224, 123, 57, 0.32); }
+.feature-card-amber::before { background: linear-gradient(150deg, rgba(224, 123, 57, 0.16), rgba(224, 123, 57, 0.04) 60%); }
+.feature-card-warm { border-color: rgba(201, 172, 116, 0.3); }
+.feature-card-warm::before { background: linear-gradient(150deg, rgba(201, 172, 116, 0.14), rgba(201, 172, 116, 0.04) 60%); }
+html.dark .feature-card-amber { border-color: rgba(224, 123, 57, 0.35); }
+html.dark .feature-card-warm { border-color: rgba(201, 172, 116, 0.32); }
+.feature-card > * { position: relative; z-index: 1; }
+
+/* Nav item active state is defined in the index.html token block (.nav-item-active) */
 
 /* ================================================================
    IMAGE EXTRACTOR VIEW — Complete Styles
@@ -178,7 +88,7 @@ footer {
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.25s var(--ease-emphasized);
 }
 .ie-reset-btn:hover {
   background: var(--background-card);
@@ -193,7 +103,7 @@ footer {
   padding: 60px 40px;
   text-align: center;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: all 0.3s var(--ease-emphasized);
   background: var(--background-secondary);
 }
 .ie-drop-zone:hover,
@@ -205,7 +115,7 @@ footer {
 .ie-drop-icon {
   font-size: 56px;
   margin-bottom: 16px;
-  animation: ie-float 3s ease-in-out infinite;
+  animation: ie-float 3.2s var(--ease-spring) infinite;
 }
 @keyframes ie-float {
   0%, 100% { transform: translateY(0); }
@@ -236,7 +146,7 @@ footer {
   font-weight: 600;
   letter-spacing: 0.5px;
   background: var(--brand-accent);
-  color: #fff;
+  color: var(--primary-text, #fff);
   opacity: 0.85;
 }
 
@@ -248,7 +158,7 @@ footer {
 .ie-progress-icon {
   font-size: 48px;
   margin-bottom: 12px;
-  animation: ie-pulse 1.5s ease-in-out infinite;
+  animation: ie-pulse 1.6s var(--ease-spring) infinite;
 }
 @keyframes ie-pulse {
   0%, 100% { transform: scale(1); opacity: 1; }
@@ -273,10 +183,10 @@ footer {
   height: 100%;
   background: var(--brand-accent);
   border-radius: 4px;
-  transition: width 0.4s ease;
+  transition: width 0.4s var(--ease-emphasized);
 }
 .ie-progress-bar-fill.generating {
-  background: linear-gradient(90deg, var(--brand-accent), #22c55e);
+  background: linear-gradient(90deg, var(--brand-accent), var(--success-color));
 }
 .ie-progress-msg {
   font-size: 13px;
@@ -291,34 +201,29 @@ footer {
   align-items: flex-start;
   gap: 12px;
   padding: 16px 20px;
-  background: #fef2f2;
-  border: 1px solid #fca5a5;
+  background: var(--error-bg);
+  border: 1px solid rgba(239, 68, 68, 0.3);
   border-radius: 12px;
   margin-top: 16px;
 }
-.dark .ie-error-box {
-  background: rgba(239, 68, 68, 0.1);
-  border-color: rgba(239, 68, 68, 0.3);
-}
 .ie-error-icon { font-size: 20px; }
 .ie-error-text {
-  color: #dc2626;
+  color: var(--error-text);
   font-size: 14px;
   margin: 0 0 8px 0;
 }
-.dark .ie-error-text { color: #f87171; }
 .ie-try-again-btn {
   padding: 6px 14px;
   border-radius: 6px;
-  border: 1px solid #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
   background: transparent;
-  color: #dc2626;
+  color: var(--error-text);
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.25s var(--ease-emphasized);
 }
 .ie-try-again-btn:hover {
-  background: #fef2f2;
+  background: var(--error-bg);
 }
 
 /* Summary bar */
@@ -359,7 +264,7 @@ footer {
   color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.25s var(--ease-emphasized);
 }
 .ie-select-btn:hover {
   border-color: var(--brand-accent);
@@ -378,18 +283,18 @@ footer {
   border-radius: 12px;
   overflow: hidden;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s var(--ease-emphasized);
   background: var(--background-card);
   position: relative;
 }
 .ie-gallery-item:hover {
   border-color: var(--brand-accent);
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+  box-shadow: 0 6px 20px rgba(var(--shadow-color), 0.12);
 }
 .ie-gallery-item.selected {
   border-color: var(--brand-accent);
-  box-shadow: 0 0 0 3px rgba(224, 123, 57, 0.2);
+  box-shadow: 0 0 0 3px var(--primary-highlight);
 }
 .ie-gallery-checkbox {
   position: absolute;
@@ -397,7 +302,7 @@ footer {
   left: 8px;
   font-size: 18px;
   z-index: 2;
-  text-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  text-shadow: 0 1px 4px rgba(var(--shadow-color), 0.4);
 }
 .ie-gallery-thumb {
   width: 100%;
@@ -454,7 +359,7 @@ footer {
   font-weight: 500;
   font-family: var(--font-family-sans);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.25s var(--ease-emphasized);
 }
 .ie-format-btn.active {
   border-color: var(--brand-accent);
@@ -481,7 +386,7 @@ footer {
   border-radius: 12px;
   background: var(--background-card);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.25s var(--ease-emphasized);
 }
 .ie-layout-card:hover {
   border-color: var(--brand-accent);
@@ -490,7 +395,7 @@ footer {
 .ie-layout-card.active {
   border-color: var(--brand-accent);
   background: var(--primary-highlight);
-  box-shadow: 0 0 0 3px rgba(224, 123, 57, 0.15);
+  box-shadow: 0 0 0 3px var(--primary-highlight);
 }
 .ie-layout-preview {
   width: 50px;
@@ -540,20 +445,20 @@ footer {
   width: 100%;
   padding: 16px 24px;
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-control);
   background: var(--brand-accent);
-  color: #fff;
+  color: var(--primary-text, #fff);
   font-size: 14px;
   font-weight: 600;
   font-family: var(--font-family-sans);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.25s var(--ease-emphasized);
   letter-spacing: 0.3px;
 }
 .ie-generate-btn:hover:not(:disabled) {
   background: var(--brand-accent-hover);
   transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(224, 123, 57, 0.35);
+  box-shadow: 0 4px 16px var(--primary-highlight);
 }
 .ie-generate-btn:disabled {
   opacity: 0.4;
@@ -591,4 +496,3 @@ footer {
     flex-direction: column;
   }
 }
-

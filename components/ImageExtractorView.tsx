@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
+import { FileTextIcon, SpinnerIcon, ExclamationCircleIcon, DownloadIcon, CheckIcon, FolderZipIcon, RotateCwIcon } from './Icons';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -93,15 +94,18 @@ const extractImagesFromPDF = async (
             });
           });
 
-          // imgData can be an ImageBitmap, or { data, width, height } typed array
+          // pdf.js >= 3.4.120 delivers embedded images as a wrapper object with
+          // an ImageBitmap (.bitmap) when OffscreenCanvas is available, and as
+          // raw pixel data ({ data, width, height, kind }) otherwise. Handle both.
+          const bitmap = imgData?.bitmap instanceof ImageBitmap ? imgData.bitmap : (imgData instanceof ImageBitmap ? imgData : null);
           const canvas = document.createElement('canvas');
           const ctx = canvas.getContext('2d')!;
 
-          if (imgData instanceof ImageBitmap) {
-            canvas.width = imgData.width;
-            canvas.height = imgData.height;
-            ctx.drawImage(imgData, 0, 0);
-          } else if (imgData.data && imgData.width && imgData.height) {
+          if (bitmap) {
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            ctx.drawImage(bitmap, 0, 0);
+          } else if (imgData?.data && imgData?.width && imgData?.height) {
             canvas.width = imgData.width;
             canvas.height = imgData.height;
             const imageDataObj = ctx.createImageData(imgData.width, imgData.height);
@@ -500,18 +504,23 @@ const ImageExtractorView: React.FC = () => {
     <div className="p-4 sm:p-8 w-full">
 
       {/* ──────────── HEADER ──────────── */}
-      <header className="mb-8">
+      <header className="view-header">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="display-md" style={{ color: 'var(--text-primary)' }}>Image Extractor</h1>
+          <div>
+            <div className="view-eyebrow">
+              <span className="eyebrow-dot" />
+              Batch extraction
+            </div>
+            <h1 className="display-md">Image Extractor</h1>
           </div>
           {extractedImages.length > 0 && (
             <button className="ie-reset-btn" onClick={handleReset}>
-              ↻ Start Over
+              <RotateCwIcon className="w-4 h-4" />
+              Start Over
             </button>
           )}
         </div>
-        <p className="body-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+        <p className="body-sm mt-1">
           Extract embedded pictures from PDF & Word documents. Choose your layout and download.
         </p>
       </header>
@@ -538,7 +547,7 @@ const ImageExtractorView: React.FC = () => {
               e.target.value = '';
             }}
           />
-          <div className="ie-drop-icon">📄</div>
+          <div className="ie-drop-icon"><FileTextIcon className="w-14 h-14 mx-auto" /></div>
           <p className="ie-drop-title">
             Drop your <strong>PDF</strong> or <strong>Word</strong> document here
           </p>
@@ -555,7 +564,7 @@ const ImageExtractorView: React.FC = () => {
       {/* ──────────── EXTRACTION PROGRESS ──────────── */}
       {isExtracting && (
         <div className="ie-progress-section">
-          <div className="ie-progress-icon">🔍</div>
+          <div className="ie-progress-icon"><SpinnerIcon className="w-12 h-12 mx-auto" /></div>
           <p className="ie-progress-title">Extracting images...</p>
           <div className="ie-progress-bar-track">
             <div
@@ -570,7 +579,7 @@ const ImageExtractorView: React.FC = () => {
       {/* ──────────── ERROR ──────────── */}
       {error && (
         <div className="ie-error-box">
-          <span className="ie-error-icon">⚠️</span>
+          <span className="ie-error-icon"><ExclamationCircleIcon className="w-5 h-5" /></span>
           <div>
             <p className="ie-error-text">{error}</p>
             <button className="ie-try-again-btn" onClick={handleReset}>
@@ -587,13 +596,13 @@ const ImageExtractorView: React.FC = () => {
           <div className="ie-summary-bar">
             <div className="ie-summary-left">
               <span className="ie-summary-count">
-                📂 {extractedImages.length} image(s) found
+                {extractedImages.length} image(s) found
               </span>
               <span className="ie-summary-selected">
-                ✅ {selectedImages.length} selected
+                {selectedImages.length} selected
               </span>
               <span className="ie-summary-size">
-                💾 {formatBytes(totalSelectedSize)}
+                {formatBytes(totalSelectedSize)}
               </span>
             </div>
             <div className="ie-summary-right">
@@ -615,7 +624,7 @@ const ImageExtractorView: React.FC = () => {
                 onClick={() => toggleImage(img.id)}
               >
                 <div className="ie-gallery-checkbox">
-                  {img.selected ? '☑️' : '⬜'}
+                  {img.selected ? <CheckIcon className="w-4 h-4" /> : <span className="block w-4 h-4 rounded border border-current opacity-40" />}
                 </div>
                 <img
                   src={img.dataUrl}
@@ -642,7 +651,7 @@ const ImageExtractorView: React.FC = () => {
 
           {/* ──────────── LAYOUT OPTIONS ──────────── */}
           <div className="ie-options-section">
-            <h3 className="ie-options-title">📐 Output Layout</h3>
+            <h3 className="ie-options-title">Output Layout</h3>
 
             {/* Output format toggle */}
             <div className="ie-format-toggle">
@@ -650,13 +659,17 @@ const ImageExtractorView: React.FC = () => {
                 className={`ie-format-btn ${outputFormat === 'pdf' ? 'active' : ''}`}
                 onClick={() => setOutputFormat('pdf')}
               >
-                📄 PDF Document
+                <span className="flex items-center justify-center gap-2">
+                  <FileTextIcon className="w-4 h-4" /> PDF Document
+                </span>
               </button>
               <button
                 className={`ie-format-btn ${outputFormat === 'zip' ? 'active' : ''}`}
                 onClick={() => setOutputFormat('zip')}
               >
-                📦 ZIP (Individual Files)
+                <span className="flex items-center justify-center gap-2">
+                  <FolderZipIcon className="w-4 h-4" /> ZIP (Individual Files)
+                </span>
               </button>
             </div>
 
@@ -693,7 +706,7 @@ const ImageExtractorView: React.FC = () => {
             {/* Page count preview */}
             {outputFormat === 'pdf' && selectedImages.length > 0 && (
               <div className="ie-page-preview">
-                📝 This will generate <strong>{totalPages} page(s)</strong> with{' '}
+                This will generate <strong>{totalPages} page(s)</strong> with{' '}
                 <strong>{selectedImages.length} image(s)</strong> at{' '}
                 <strong>{imagesPerPage} per page</strong>.
               </div>
@@ -718,9 +731,12 @@ const ImageExtractorView: React.FC = () => {
                 onClick={handleGenerate}
                 disabled={selectedImages.length === 0}
               >
-                {outputFormat === 'pdf'
-                  ? `⬇️ Download PDF (${totalPages} pages, ${selectedImages.length} images)`
-                  : `⬇️ Download ZIP (${selectedImages.length} images)`}
+                <span className="flex items-center justify-center gap-2">
+                  <DownloadIcon className="w-4 h-4" />
+                  {outputFormat === 'pdf'
+                    ? `Download PDF (${totalPages} ${totalPages === 1 ? 'page' : 'pages'}, ${selectedImages.length} images)`
+                    : `Download ZIP (${selectedImages.length} images)`}
+                </span>
               </button>
             )}
           </div>

@@ -14,19 +14,14 @@ const UpdateProfileSchema = z.object({
     avatarUrl: z.string().url().max(512).optional(),
 });
 
-interface AuthenticatedRequest {
-    user: {
-        uid: string;
-        email?: string;
-        name?: string;
-        picture?: string;
-    };
-}
+const UploadPictureSchema = z.object({
+    pictureDataUrl: z.string().startsWith('data:image/').max(2 * 1024 * 1024),
+});
 
 export async function profileRoutes(app: FastifyInstance) {
     app.post('/v1/profile/upload-picture', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
-        const { user } = request as any as AuthenticatedRequest;
-        if (!user.uid) {
+        const { user } = request;
+        if (!user) {
             return reply.code(401).send({ success: false, message: 'Unauthorized.' });
         }
 
@@ -41,14 +36,11 @@ export async function profileRoutes(app: FastifyInstance) {
             let dataUrl = '';
 
             if (request.headers['content-type']?.includes('application/json')) {
-                const body = request.body as any;
-                if (!body || typeof body.pictureDataUrl !== 'string' || !body.pictureDataUrl.startsWith('data:image/')) {
+                const parseResult = UploadPictureSchema.safeParse(request.body);
+                if (!parseResult.success) {
                     return reply.code(400).send({ success: false, message: 'Valid image data is required.' });
                 }
-                if (body.pictureDataUrl.length > 2 * 1024 * 1024) {
-                    return reply.code(400).send({ success: false, message: 'Image data exceeds 2 MB limit.' });
-                }
-                dataUrl = body.pictureDataUrl;
+                dataUrl = parseResult.data.pictureDataUrl;
             } else {
                 const file = await request.file();
                 if (!file) {
@@ -88,8 +80,8 @@ export async function profileRoutes(app: FastifyInstance) {
     });
 
     app.get('/v1/profile', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
-        const { user } = request as any as AuthenticatedRequest;
-        if (!user.uid) {
+        const { user } = request;
+        if (!user) {
             return reply.code(401).send({ success: false, message: 'Unauthorized.' });
         }
 
@@ -116,8 +108,8 @@ export async function profileRoutes(app: FastifyInstance) {
     });
 
     app.put('/v1/profile', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
-        const { user } = request as any as AuthenticatedRequest;
-        if (!user.uid) {
+        const { user } = request;
+        if (!user) {
             return reply.code(401).send({ success: false, message: 'Unauthorized.' });
         }
 

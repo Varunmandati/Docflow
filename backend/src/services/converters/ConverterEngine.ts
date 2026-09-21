@@ -9,8 +9,16 @@ export interface EngineOptions {
     dpi?: number;
     quality?: number;
     password?: string;
+    pageNumbers?: boolean;
+    watermark?: {
+        text: string;
+        fontSize?: number;
+        color?: string;
+        opacity?: number;
+        rotation?: number;
+    };
     // Add additional engine-specific options if needed
-    [key: string]: any;
+    [key: string]: unknown;
 }
 
 export interface ConverterEngine {

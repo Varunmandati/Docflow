@@ -18,7 +18,11 @@ import {
   Pause,
   Trash2,
   FileBox,
-  AlertCircle
+  FileVideo,
+  FileText,
+  AlertCircle,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -44,7 +48,9 @@ export interface TorrentStats {
   paused?: boolean;
 }
 
-const TORRENT_SERVER_URL = (import.meta.env.VITE_TORRENT_SERVER_URL || '').replace(/\/$/, '');
+const TORRENT_SERVER_URL = import.meta.env.DEV
+  ? ''
+  : (import.meta.env.VITE_TORRENT_SERVER_URL || '').replace(/\/$/, '');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const formatBytes = (bytes: number, decimals = 2): string => {
@@ -84,7 +90,35 @@ const TorrentConverterView: React.FC = () => {
   const [addStatus, setAddStatus] = useState<string>('');
   const [isAdding, setIsAdding] = useState(false);
   const [isCleaning, setIsCleaning] = useState(false);
+  const [pendingCleanup, setPendingCleanup] = useState<null | 'all' | string>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFiles, setSelectedFiles] = useState<Record<string, Set<number>>>({});
+
+  const toggleFileSelection = (infoHash: string, fileIndex: number) => {
+    setSelectedFiles(prev => {
+      const current = new Set(prev[infoHash] || []);
+      if (current.has(fileIndex)) {
+        current.delete(fileIndex);
+      } else {
+        current.add(fileIndex);
+      }
+      return { ...prev, [infoHash]: current };
+    });
+  };
+
+  const handleDownloadSelected = (torrent: TorrentStats) => {
+    const selected = selectedFiles[torrent.infoHash];
+    if (!selected || selected.size === 0) {
+      setAddStatus('Info: Select files to download by clicking the checkboxes.');
+      return;
+    }
+    selected.forEach(fileIndex => {
+      const file = torrent.files.find(f => f.index === fileIndex);
+      if (file && file.progress > 0) {
+        window.open(`${TORRENT_SERVER_URL}/api/torrents/${encodeURIComponent(torrent.infoHash)}/files/${fileIndex}`, '_blank');
+      }
+    });
+  };
 
   const handleTorrentAction = async (infoHash: string, action: 'pause' | 'resume' | 'remove') => {
     try {
@@ -98,7 +132,7 @@ const TorrentConverterView: React.FC = () => {
       if (!res.ok) {
         const errText = await res.text();
         console.error(`[UI] Server responded ${res.status}: ${errText}`);
-        alert(`Failed to ${action} torrent. Server error: ${res.status}`);
+        setAddStatus(`Error: Failed to ${action} torrent. Server error: ${res.status}`);
         return;
       }
       
@@ -112,12 +146,11 @@ const TorrentConverterView: React.FC = () => {
       }
     } catch (err: any) {
       console.error(`[UI] ${action} failed:`, err);
-      alert(`Failed to ${action} torrent: ${err.message || 'Network error. Is the server running?'}`);
+      setAddStatus(`Error: Failed to ${action} torrent: ${err.message || 'Network error. Is the server running?'}`);
     }
   };
 
   const handleCleanup = async () => {
-    if (!window.confirm('This will remove ALL active downloads and clean all cached files from disk. Continue?')) return;
     try {
       setIsCleaning(true);
       // First remove all active torrents
@@ -135,14 +168,26 @@ const TorrentConverterView: React.FC = () => {
       const res = await fetch(`${TORRENT_SERVER_URL}/api/torrents/cleanup`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
-        alert(`Disk cleaned! Removed ${torrents.length} active download(s) and deleted ${data.deleted} cached file(s)/folder(s).`);
+        setAddStatus(`Success: Removed ${torrents.length} active download(s) and deleted ${data.deleted} cached file(s)/folder(s) from disk.`);
       } else {
-        alert(`Removed ${torrents.length} active download(s), but disk cleanup returned an error.`);
+        setAddStatus(`Error: Removed ${torrents.length} active download(s), but disk cleanup returned an error.`);
       }
     } catch (err) {
-      alert('Cleanup failed. Is the server running?');
+      setAddStatus('Error: Cleanup failed. Is the server running?');
     } finally {
       setIsCleaning(false);
+    }
+  };
+
+  const handleCleanupClick = () => setPendingCleanup('all');
+
+  const confirmPendingCleanup = () => {
+    const target = pendingCleanup;
+    setPendingCleanup(null);
+    if (target === 'all') {
+      handleCleanup();
+    } else if (target) {
+      handleTorrentAction(target, 'remove');
     }
   };
 
@@ -167,23 +212,28 @@ const TorrentConverterView: React.FC = () => {
     }
   };
 
-  // Real-time backend stats polling (every 1 second)
+  // Real-time backend stats polling (every 500ms, sequential — no AbortController)
   useEffect(() => {
+    let active = true;
+
     const fetchStats = async () => {
+      if (!active) return;
       try {
         const res = await fetch(`${TORRENT_SERVER_URL}/api/torrents`);
-        if (res.ok) {
-          const data = await res.json();
-          setTorrents(data);
+        if (res.ok && active) {
+          const text = await res.text();
+          if (text && text.length > 2 && active) {
+            setTorrents(JSON.parse(text));
+          }
         }
-      } catch (err) {
-        console.warn('Failed to poll torrent stats. Backend server might be offline.', err);
+      } catch (err: any) {
+        // Swallow — server may be restarting
       }
+      if (active) setTimeout(fetchStats, 500);
     };
 
     fetchStats();
-    const interval = setInterval(fetchStats, 2000);
-    return () => clearInterval(interval);
+    return () => { active = false; };
   }, []);
 
   // ── Tab 1 Action: Add Torrent ─────────────────────────────────────────────
@@ -258,37 +308,39 @@ const TorrentConverterView: React.FC = () => {
   // ── Computed Stats for Header ─────────────────────────────────────────────
   const activeCount = torrents.filter(t => !t.done).length;
   const totalDownloaded = torrents.reduce((acc, t) => acc + (t.downloaded || 0), 0);
-  const bandwidthSaved = totalDownloaded * 0.15; // Mock for demonstration
+  const activePeers = torrents.reduce((acc, t) => acc + (t.numPeers || 0), 0);
 
   const allPaused = torrents.filter(t => !t.done).every(t => t.paused);
   const hasActiveTorrents = torrents.some(t => !t.done);
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8 space-y-8 animate-in fade-in duration-300">
+    <div className="max-w-5xl mx-auto px-4 py-8 space-y-8 fade-in-only">
       
       {/* ── HEADER TITLE ── */}
-      <header className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-8">
+      <header className="view-header flex flex-col md:flex-row md:items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
-            <h1 className="display-md" style={{ color: 'var(--text-primary)' }}>Torrent Streaming</h1>
+          <div className="view-eyebrow">
+            <span className="eyebrow-dot" />
+            Peer-to-peer cache
           </div>
-          <p className="body-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+          <h1 className="display-md">Torrent Streaming</h1>
+          <p className="body-sm mt-1">
             Stream torrents directly from magnet links or .torrent files.
           </p>
         </div>
 
-        {/* Tab Navigator */}
-        <div className="segmented-control">
+        {/* Tab Navigator + Disk utilities */}
+        <div className="flex items-center gap-2">
           <button
-            onClick={handleCleanup}
+            onClick={handleCleanupClick}
             disabled={isCleaning}
-            className="text-[var(--text-secondary)] hover:text-red-500 flex items-center gap-2"
+            className="p-2.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--danger-color)] hover:bg-[var(--well)] transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
             title="Remove all active downloads and clean cached files from disk"
+            aria-label="Clean disk and downloads"
           >
-            <Trash2 size={14} />
-            <span className="caption-text">{isCleaning ? 'CLEANING...' : 'CLEAN DISK'}</span>
+            <Trash2 size={16} />
           </button>
-          <div className="w-px bg-[var(--border-color)] mx-1 my-1"></div>
+          <div className="segmented-control">
           <button
             onClick={() => setActiveTab('add')}
             className={`flex items-center gap-2 ${activeTab === 'add' ? 'active' : ''}`}
@@ -303,50 +355,64 @@ const TorrentConverterView: React.FC = () => {
             <List size={14} />
             <span className="caption-text">ACTIVE DOWNLOADS</span>
             {torrents.length > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white caption-text w-4 h-4 rounded-full flex items-center justify-center font-bold" style={{ fontSize: '9px' }}>
+              <span className="absolute -top-1.5 -right-1.5 bg-[var(--danger-color)] text-white caption-text w-4 h-4 rounded-full flex items-center justify-center font-bold" style={{ fontSize: '9px' }}>
                 {torrents.length}
               </span>
             )}
           </button>
+          </div>
         </div>
       </header>
 
       {/* ── GLOBAL REAL-TIME STATS BAR ── */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-[var(--background-card)] border border-[var(--border-color)] p-4 rounded-xl elevation-2 flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center flex-shrink-0">
+        <div className="panel-card p-4 rounded-2xl flex items-center gap-4">
+          <div className="chip-icon text-[var(--primary-color)]">
             <Activity size={20} />
           </div>
           <div>
-            <p className="caption-text" style={{ color: 'var(--text-tertiary)' }}>Active Downloads</p>
-            <p className="body-lg font-bold" style={{ color: 'var(--text-primary)' }}>{activeCount}</p>
+            <p className="caption-text text-[var(--text-tertiary)]">Active Downloads</p>
+            <p className="body-lg font-bold text-[var(--text-primary)] mono-stat">{activeCount}</p>
           </div>
         </div>
 
-        <div className="bg-[var(--background-card)] border border-[var(--border-color)] p-4 rounded-xl elevation-2 flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-emerald-500/10 text-emerald-500 flex items-center justify-center flex-shrink-0">
+        <div className="panel-card p-4 rounded-2xl flex items-center gap-4">
+          <div className="chip-icon text-[var(--success-color)]">
             <DownloadCloud size={20} />
           </div>
           <div>
-            <p className="caption-text" style={{ color: 'var(--text-tertiary)' }}>Total Downloaded</p>
-            <p className="body-lg font-bold" style={{ color: 'var(--text-primary)' }}>{formatBytes(totalDownloaded)}</p>
+            <p className="caption-text text-[var(--text-tertiary)]">Total Downloaded</p>
+            <p className="body-lg font-bold text-[var(--text-primary)] mono-stat">{formatBytes(totalDownloaded)}</p>
           </div>
         </div>
 
-        <div className="bg-[var(--background-card)] border border-[var(--border-color)] p-4 rounded-xl elevation-2 flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-orange-500/10 text-[var(--primary-color)] flex items-center justify-center flex-shrink-0">
-            <HardDrive size={20} />
+        <div className="panel-card p-4 rounded-2xl flex items-center gap-4">
+          <div className="chip-icon text-[var(--success-color)]">
+            <Users size={20} />
           </div>
           <div>
-            <p className="caption-text" style={{ color: 'var(--text-tertiary)' }}>Bandwidth Saved</p>
-            <p className="body-lg font-bold" style={{ color: 'var(--text-primary)' }}>{formatBytes(bandwidthSaved)}</p>
+            <p className="caption-text text-[var(--text-tertiary)]">Active Peers</p>
+            <p className="body-lg font-bold text-[var(--text-primary)]">{activePeers}</p>
           </div>
         </div>
       </div>
 
+      {/* Status block */}
+      {addStatus && (
+        <div className={`caption-mono p-4 rounded-xl border break-all mb-6 ${
+          addStatus.includes('Error') 
+            ? 'status-error' 
+            : addStatus.includes('Success') 
+              ? 'status-success' 
+              : 'status-info'
+        }`}>
+          {addStatus}
+        </div>
+      )}
+
       {/* ── TAB CONTENT: ADD TORRENT ── */}
       {activeTab === 'add' && (
-        <div className="space-y-6 animate-in slide-in-from-bottom-2 duration-300">
+        <div className="space-y-6 fade-in-only">
           <div className="grid md:grid-cols-2 gap-6">
             
             {/* Magnet link container */}
@@ -412,23 +478,12 @@ const TorrentConverterView: React.FC = () => {
           </div>
 
           {/* Status block */}
-          {addStatus && (
-            <div className={`p-4 rounded-xl border break-all ${
-              addStatus.includes('Error') 
-                ? 'bg-red-500/10 border-red-500/20 text-red-400' 
-                : addStatus.includes('Success') 
-                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
-                  : 'bg-[var(--background-card)] border-[var(--border-color)] text-[var(--text-secondary)]'
-            }`} style={{ fontFamily: 'var(--font-family-mono)', fontSize: '13px' }}>
-              {addStatus}
-            </div>
-          )}
         </div>
       )}
 
       {/* ── TAB CONTENT: ACTIVE DOWNLOADS ── */}
       {activeTab === 'torrents' && (
-        <div className="space-y-6 animate-in slide-in-from-bottom-2 duration-300">
+        <div className="space-y-6 fade-in-only">
 
           {/* Bulk Pause / Resume All controls */}
           {hasActiveTorrents && torrents.length > 0 && (
@@ -491,19 +546,15 @@ const TorrentConverterView: React.FC = () => {
                               </button>
                             )}
                             <button
-                              onClick={() => {
-                                if(window.confirm('Are you sure you want to remove this torrent and delete its cached files?')) {
-                                  handleTorrentAction(torrent.infoHash, 'remove');
-                                }
-                              }}
-                              className="p-1.5 rounded-md bg-[var(--background-secondary)] text-[var(--text-secondary)] hover:text-red-500 transition-colors border border-[var(--border-color)]"
+                              onClick={() => setPendingCleanup(torrent.infoHash)}
+                              className="p-1.5 rounded-md bg-[var(--background-secondary)] text-[var(--text-secondary)] hover:text-[var(--danger-color)] transition-colors border border-[var(--border-color)]"
                               title="Remove Torrent"
                             >
                               <Trash2 size={14} />
                             </button>
                           </div>
                         </div>
-                        <div className="flex flex-wrap items-center gap-4 mt-2 caption-text" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-family-mono)' }}>
+                        <div className="flex flex-wrap items-center gap-4 mt-2 caption-mono text-[var(--text-secondary)]">
                           <span className="flex items-center gap-1"><HardDrive size={12} /> {formatBytes(torrent.length)}</span>
                           <span className="flex items-center gap-1"><Users size={12} /> {torrent.numPeers} peers</span>
                           {torrent.paused && !torrent.done && (
@@ -526,10 +577,13 @@ const TorrentConverterView: React.FC = () => {
                     </div>
 
                     {/* Progress Slider Display */}
-                    <div className="w-full bg-[var(--background-secondary)] rounded-full h-2 overflow-hidden border border-[var(--border-color)]">
+                    <div className="w-full bg-[var(--background-secondary)] rounded-full h-1.5 overflow-hidden border border-[var(--border-color)]">
                       <div 
-                        className="bg-[var(--primary-color)] h-full transition-all duration-500 rounded-full"
-                        style={{ width: `${(torrent.progress || 0) * 100}%` }}
+                        className="h-full transition-all duration-500 rounded-full"
+                        style={{ 
+                          width: `${(torrent.progress || 0) * 100}%`,
+                          background: 'linear-gradient(90deg, var(--primary-color), color-mix(in srgb, var(--primary-color) 40%, var(--accent-secondary)))'
+                        }}
                       />
                     </div>
 
@@ -538,7 +592,8 @@ const TorrentConverterView: React.FC = () => {
                       <div className="grid grid-cols-3 gap-2 pt-4 border-t border-[var(--border-color)] caption-text" style={{ fontFamily: 'var(--font-family-mono)', color: 'var(--text-secondary)' }}>
                         <div className="flex flex-col">
                           <span style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>DOWNLOAD SPEED</span>
-                          <span className="text-[var(--primary-color)]" style={{ fontWeight: 700 }}>
+                          <span className="flex items-center gap-1 text-[var(--primary-color)]" style={{ fontWeight: 700 }}>
+                            <ArrowDown size={11} />
                             {torrent.numPeers === 0 && torrent.downloadSpeed === 0 
                               ? 'Searching peers...' 
                               : formatSpeed(torrent.downloadSpeed)}
@@ -546,7 +601,10 @@ const TorrentConverterView: React.FC = () => {
                         </div>
                         <div className="flex flex-col">
                           <span style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>UPLOAD SPEED</span>
-                          <span style={{ color: 'var(--text-primary)' }}>{formatSpeed(torrent.uploadSpeed)}</span>
+                          <span className="flex items-center gap-1" style={{ color: 'var(--text-primary)' }}>
+                            <ArrowUp size={11} />
+                            {formatSpeed(torrent.uploadSpeed)}
+                          </span>
                         </div>
                         <div className="flex flex-col items-end">
                           <span className="flex items-center gap-1" style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}><Clock size={11} /> ETA</span>
@@ -570,21 +628,51 @@ const TorrentConverterView: React.FC = () => {
                     {/* Individual File Listing tree */}
                     {torrent.files && torrent.files.length > 0 && (
                       <div className="pt-4 mt-4 border-t border-[var(--border-color)] space-y-3">
-                        <h4 className="caption-text uppercase" style={{ fontWeight: 800, letterSpacing: '0.05em', color: 'var(--text-tertiary)' }}>
-                          Captured File List
-                        </h4>
+                        <div className="flex items-center justify-between">
+                          <h4 className="caption-text uppercase" style={{ fontWeight: 800, letterSpacing: '0.05em', color: 'var(--text-tertiary)' }}>
+                            Captured File List
+                          </h4>
+                              {torrent.files.some(f => f.progress > 0) && (
+                            <button
+                              onClick={() => handleDownloadSelected(torrent)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg caption-text bg-[var(--primary-color)] hover:bg-[var(--primary-color-hover)] text-white transition-all"
+                              style={{ fontWeight: 700 }}
+                            >
+                              <Download size={12} />
+                              SAVE SELECTED ({(selectedFiles[torrent.infoHash]?.size || 0)})
+                            </button>
+                          )}
+                        </div>
                         
                         <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                           {torrent.files.map((file) => {
                             const isDone = file.progress >= 1.0;
+                            const isSelected = selectedFiles[torrent.infoHash]?.has(file.index) || false;
                             return (
                               <div 
                                 key={file.index} 
-                                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 body-sm bg-[var(--background-secondary)] p-3 rounded-xl border border-[var(--border-color)]"
+                                className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 body-sm p-3 rounded-xl border transition-all ${
+                                  isSelected 
+                                    ? 'bg-[var(--primary-highlight)] border-[var(--primary-color)]/30' 
+                                    : 'bg-[var(--background-secondary)] border-[var(--border-color)]'
+                                }`}
                               >
                                 <div className="flex items-center gap-2 truncate pr-4 flex-1">
-                                  <span className="flex-shrink-0" style={{ fontSize: '16px' }} role="img" aria-label="type">
-                                    {isVideoFile(file.name) ? '🎬' : '📄'}
+                                  {isDone && (
+                                    <button
+                                      onClick={() => toggleFileSelection(torrent.infoHash, file.index)}
+                                      className="flex-shrink-0 p-0.5 rounded hover:bg-[var(--background-card)] transition-colors"
+                                      title={isSelected ? 'Deselect file' : 'Select file for download'}
+                                    >
+                                      {isSelected ? (
+                                        <CheckSquare className="w-4 h-4 text-[var(--primary-color)]" />
+                                      ) : (
+                                        <Square className="w-4 h-4 text-[var(--text-tertiary)]" />
+                                      )}
+                                    </button>
+                                  )}
+                                  <span className="flex-shrink-0" style={{ fontSize: '16px', color: 'var(--text-tertiary)' }} role="img" aria-label="type">
+                                    {isVideoFile(file.name) ? <FileVideo className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
                                   </span>
                                   <span className="truncate body-sm" style={{ fontWeight: 600, color: 'var(--text-primary)' }} title={file.name}>
                                     {file.name}
@@ -592,7 +680,7 @@ const TorrentConverterView: React.FC = () => {
                                 </div>
 
                                 <div className="flex items-center justify-between sm:justify-end gap-4 min-w-[220px]">
-                                  <span className="caption-text" style={{ fontFamily: 'var(--font-family-mono)', color: 'var(--text-tertiary)' }}>
+                                  <span className="caption-mono text-[var(--text-tertiary)]">
                                     {formatBytes(file.length)}
                                   </span>
                                   
@@ -601,20 +689,24 @@ const TorrentConverterView: React.FC = () => {
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     onClick={(e) => {
-                                      if (!isDone) {
+                                      if (file.progress <= 0) {
                                         e.preventDefault();
-                                        alert('Because of cloud proxy timeout limits with large files, please wait for the server to finish acquiring this file (100%) before downloading it to your local device. Once it hits 100%, the full file will save quickly and reliably.');
+                                        setAddStatus('Info: File has no data on disk yet. Please wait for the download to start.');
+                                      } else if (!isDone) {
+                                        setAddStatus(`Info: Downloading ${file.name} — ${(file.progress * 100).toFixed(0)}% of data available on disk.`);
                                       }
                                     }}
-                                    className={`px-3 py-1.5 rounded-lg caption-text flex items-center gap-1.5 transition-all shadow-sm ${
-                                      !isDone 
+                                    className={`px-3 py-1.5 rounded-lg caption-text flex items-center gap-1.5 transition-all ${
+                                      file.progress <= 0
                                         ? 'bg-[var(--background-card)] text-[var(--text-tertiary)] cursor-not-allowed opacity-60 border border-[var(--border-color)]' 
-                                        : 'bg-[var(--primary-color)] hover:bg-[var(--primary-color-hover)] text-white'
+                                        : !isDone
+                                          ? 'bg-[var(--accent-secondary)] hover:bg-[var(--accent-secondary-hover)] text-white'
+                                          : 'bg-[var(--primary-color)] hover:bg-[var(--primary-color-hover)] text-white'
                                     }`}
                                     style={{ fontWeight: 700 }}
                                   >
                                     <Download size={12} />
-                                    {!isDone ? `Wait (${(file.progress * 100).toFixed(0)}%)` : 'SAVE FILE'}
+                                    {file.progress <= 0 ? 'Wait (0%)' : !isDone ? `Save (${(file.progress * 100).toFixed(0)}%)` : 'SAVE FILE'}
                                   </a>
                                 </div>
                               </div>
@@ -628,6 +720,26 @@ const TorrentConverterView: React.FC = () => {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Confirm dialog */}
+      {pendingCleanup !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setPendingCleanup(null)}>
+          <div className="panel-card p-6 max-w-sm mx-4 animate-in-item" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold mb-2 text-[var(--text-primary)]">{pendingCleanup === 'all' ? 'Clean disk & downloads?' : 'Remove this torrent?'}</h3>
+            <p className="body-sm text-[var(--text-secondary)] mb-6">
+              {pendingCleanup === 'all'
+                ? 'This will remove ALL active downloads and clean all cached files from disk. Continue?'
+                : 'Are you sure you want to remove this torrent and delete its cached files?'}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button className="secondary-btn" onClick={() => setPendingCleanup(null)}>Cancel</button>
+              <button className="primary-btn" onClick={confirmPendingCleanup} style={{ background: 'var(--danger-color)' }}>
+                {pendingCleanup === 'all' ? 'Clean Everything' : 'Remove Torrent'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

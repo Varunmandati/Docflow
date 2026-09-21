@@ -1,7 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { UploadIcon } from './Icons';
 import { QuickConvertTranslation, DropzoneTranslation } from '../translations';
-import { TrustBadges, TrustMessage } from './TrustBadges';
 
 interface FileDropzoneProps {
     onFilesAdded: (files: File[]) => void;
@@ -106,7 +105,7 @@ const FileDropzone: React.FC<FileDropzoneProps> = ({ onFilesAdded, isQuickConver
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
                 onClick={onButtonClick}
-                className={`relative w-full max-w-2xl min-h-[200px] flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-200 ease-out overflow-hidden group ${
+                className={`relative w-full max-w-2xl min-h-[200px] flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-2xl cursor-pointer transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] overflow-hidden group ${
                     isDragging 
                     ? 'border-[var(--primary-color)] bg-[var(--primary-highlight)] scale-[1.02]' 
                     : 'border-[var(--border-color)] hover:border-[var(--primary-color)] bg-[var(--background-card)] hover:bg-[var(--hover)]'
@@ -120,17 +119,19 @@ const FileDropzone: React.FC<FileDropzoneProps> = ({ onFilesAdded, isQuickConver
                     onChange={handleFileChange}
                     className="hidden"
                 />
-                <div className={`flex flex-col items-center justify-center gap-3 transition-transform duration-200 relative z-10 ${isDragging ? 'scale-105' : 'scale-100'}`}>
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 ${isDragging ? 'bg-[var(--primary-color)]/20 text-[var(--primary-color)]' : 'bg-[var(--background-secondary)] text-[var(--text-tertiary)] group-hover:text-[var(--primary-color)]'}`}>
-                        <UploadIcon className="w-5 h-5"/>
+                <div className={`flex flex-col items-center justify-center gap-3 transition-transform duration-300 relative z-10 ${isDragging ? 'scale-105' : 'scale-100'}`}>
+                    <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-300 ${isDragging ? 'bg-[var(--primary-color)]/20 text-[var(--primary-color)]' : 'bg-[var(--well)] text-[var(--text-secondary)] group-hover:text-[var(--primary-color)]'}`}>
+                        <UploadIcon className="w-6 h-6"/>
                     </div>
                     <p className={`display-sm transition-colors duration-200 ${isDragging ? 'text-[var(--primary-color)]' : 'text-[var(--text-primary)]'}`}>
-                        {isDragging ? 'Drop them here!' : dropzoneT.dragText}
+                        {isDragging ? 'Drop them here' : dropzoneT.dragText}
                     </p>
-                    
-                    <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+                    <p className="caption-text" style={{ color: 'var(--text-tertiary)' }}>
+                        {dropzoneT.subtitle}
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
                         {['PDF', 'PNG', 'JPG', 'DOCX'].map(ext => (
-                            <span key={ext} className="caption-mono px-2 py-0.5 rounded-full bg-[var(--background-secondary)] text-[var(--text-secondary)]">
+                            <span key={ext} className="meta-chip">
                                 {ext}
                             </span>
                         ))}

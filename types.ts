@@ -5,7 +5,7 @@ export type PageSize = 'a4' | 'letter';
 export type Orientation = 'p' | 'l'; // portrait | landscape
 export type ColorMode = 'color' | 'grayscale' | 'bw'; // bw = black & white
 export type FontSize = 'sm' | 'md' | 'lg';
-export type FontFamily = 'Inter' | 'Roboto' | 'Lato' | 'Merriweather';
+export type FontFamily = 'Space Grotesk' | 'Plus Jakarta Sans' | 'Inter' | 'Lato' | 'Roboto' | 'Merriweather';
 export type OutputFormat = 'pdf' | 'jpg' | 'png' | 'webp' | 'docx';
 export type DownloadableFormat = OutputFormat | 'zip';
 
@@ -19,13 +19,43 @@ export interface DocxRun {
     bold?: boolean;
     italic?: boolean;
     underline?: boolean;
+    strikethrough?: boolean;
     url?: string;
+    fontFamily?: string;
+    fontSize?: number;
+    color?: string;
+    characterSpacing?: number;
+}
+
+/** Spacing information for a DOCX block. */
+export interface BlockSpacing {
+    before?: number;   // space before in twips (1/20 of a point)
+    after?: number;    // space after in twips
+    line?: number;     // line spacing in twips (240 = single, 360 = 1.5, 480 = double)
 }
 
 /** One paragraph/block of a document, preserved from the source PDF layout. */
 export interface DocxBlock {
-    type: 'heading1' | 'heading2' | 'heading3' | 'body' | 'list' | 'spacer';
+    type: 'heading1' | 'heading2' | 'heading3' | 'body' | 'list' | 'spacer' | 'table_cell';
     runs: DocxRun[];
+    fontSize?: number;
+    fontFamily?: string;
+    alignment?: 'left' | 'center' | 'right' | 'justify';
+    spacing?: BlockSpacing;
+    indent?: { left?: number; right?: number; firstLine?: number };
+    isBold?: boolean;
+    isItalic?: boolean;
+    fullWidth?: boolean;
+}
+
+/** Page geometry extracted from the PDF. */
+export interface PageGeometry {
+    width: number;    // in points (1/72 inch)
+    height: number;
+    marginLeft: number;
+    marginRight: number;
+    marginTop: number;
+    marginBottom: number;
 }
 
 export interface PageInfo {
@@ -35,6 +65,9 @@ export interface PageInfo {
     originalCanvas: HTMLCanvasElement;
     text?: string[];
     docxBlocks?: DocxBlock[];
+    docxColumnBlocks?: DocxBlock[][];
+    columnCount?: number;
+    pageGeometry?: PageGeometry;
 }
 
 export interface AppFile {

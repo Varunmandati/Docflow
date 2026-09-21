@@ -9,17 +9,19 @@ export default defineConfig(({ mode }) => {
     // the client bundle (no VITE_ prefix, not injected via define).
     const env = loadEnv(mode, '.', '');
     const streamtorToken = env.STREAMTOR_INTERNAL_TOKEN || '';
+    // When the dev server is reached through an HTTPS reverse proxy, point HMR
+    // at the public port (e.g. VITE_HMR_CLIENT_PORT=443). Locally we let the
+    // client use the page origin (port 3000) so HMR works without a tunnel.
+    const hmrClientPort = env.VITE_HMR_CLIENT_PORT ? Number(env.VITE_HMR_CLIENT_PORT) : undefined;
     return {
       server: {
         port: 3000,
         host: '0.0.0.0',
         allowedHosts: true,
-        hmr: {
-          clientPort: 443
-        },
+        hmr: hmrClientPort ? { clientPort: hmrClientPort } : undefined,
         proxy: {
           '/v1': {
-            target: 'http://127.0.0.1:8080',
+            target: 'http://127.0.0.1:8090',
             changeOrigin: true,
             rewrite: (path) => path
           },

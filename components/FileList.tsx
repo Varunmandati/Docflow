@@ -89,7 +89,7 @@ const FileList: React.FC<FileListProps> = ({ files, onClear, onRemove, onManage,
     }, [files, onReorder]);
 
     return (
-        <div className="w-full max-w-3xl bg-black/5 dark:bg-white/5 rounded-xl p-6 border border-[var(--border-color)]">
+        <div className="w-full max-w-3xl well p-6">
             <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-3">
                     <h3 className="text-xl font-semibold text-[var(--text-primary)]">Selected Files ({files.length})</h3>
@@ -148,16 +148,16 @@ const FileList: React.FC<FileListProps> = ({ files, onClear, onRemove, onManage,
                         {/* Left Column: Thumbnail + Filename */}
                         <div className="flex items-center gap-4 overflow-hidden flex-1 min-w-0">
                             {appFile.status === 'loading' ? (
-                                 <div className="w-12 h-12 bg-black/5 dark:bg-white/5 rounded-lg flex items-center justify-center flex-shrink-0 relative overflow-hidden">
-                                    <div className="w-full h-1 bg-black/10 dark:bg-white/10 absolute bottom-0 left-0 overflow-hidden">
-                                        <div className="h-full bg-[var(--primary-color)] w-1/2 animate-[slide_1s_ease-in-out_infinite_alternate]" style={{ animation: 'indeterminate-progress 1.5s infinite ease-in-out' }} />
+                                 <div className="w-12 h-12 bg-[var(--well)] rounded-lg flex items-center justify-center flex-shrink-0 relative overflow-hidden">
+                                    <div className="w-full h-1 bg-[var(--well-strong)] absolute bottom-0 left-0 overflow-hidden">
+                                        <div className="h-full bg-[var(--primary-color)] w-1/2 animate-indeterminate" />
                                     </div>
                                     <FileIcon className="w-5 h-5 text-[var(--primary-color)] opacity-50 relative z-10"/>
                                 </div>
                             ) : appFile.pages[0]?.thumbnailUrl ? (
-                                <img src={appFile.pages[0].thumbnailUrl} alt="Preview" className="w-12 h-12 object-cover rounded-lg bg-black/5 dark:bg-white/5 flex-shrink-0" />
+                                <img src={appFile.pages[0].thumbnailUrl} alt="Preview" className="w-12 h-12 object-cover rounded-lg bg-[var(--well)] flex-shrink-0" />
                             ) : (
-                                <div className="w-12 h-12 bg-black/5 dark:bg-white/5 rounded-lg flex items-center justify-center flex-shrink-0">
+                                <div className="w-12 h-12 bg-[var(--well)] rounded-lg flex items-center justify-center flex-shrink-0">
                                     <FileIcon className="w-6 h-6 text-[var(--primary-color)]"/>
                                 </div>
                             )}
@@ -175,18 +175,9 @@ const FileList: React.FC<FileListProps> = ({ files, onClear, onRemove, onManage,
                         <div className="hidden sm:flex items-center gap-3 flex-shrink-0">
                             <div className="text-right">
                                 <p className="text-xs text-[var(--text-tertiary)] whitespace-nowrap">{formatBytes(appFile.file.size)}</p>
-                                <select
-                                    disabled={disabled || appFile.status === 'loading'}
-                                    value={appFile.outputFormat}
-                                    onChange={(e) => onUpdateFormat?.(appFile.id, e.target.value as OutputFormat)}
-                                    className="text-[10px] font-bold uppercase bg-black/5 dark:bg-white/10 text-[var(--text-secondary)] rounded px-2 py-1 outline-none cursor-pointer hover:bg-[var(--primary-color)] hover:text-[var(--primary-text)] transition-all duration-200 disabled:cursor-not-allowed"
-                                >
-                                    <option value="pdf">PDF</option>
-                                    <option value="jpg">JPG</option>
-                                    <option value="png">PNG</option>
-                                    <option value="webp">WEBP</option>
-                                    <option value="docx">DOCX</option>
-                                </select>
+                                <span className="text-[10px] font-bold uppercase bg-[var(--well)] text-[var(--text-secondary)] rounded px-2 py-1 inline-block">
+                                    {appFile.outputFormat}
+                                </span>
                             </div>
                         </div>
 
@@ -225,7 +216,7 @@ const FileList: React.FC<FileListProps> = ({ files, onClear, onRemove, onManage,
                             <button 
                                 onClick={() => onRemove(appFile.id)} 
                                 disabled={disabled}
-                                className="text-[var(--text-tertiary)] hover:text-[var(--danger-color)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-[var(--text-tertiary)] p-2 rounded hover:bg-red-500/10 opacity-0 group-hover:opacity-100"
+                                className="text-[var(--text-tertiary)] hover:text-[var(--danger-color)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-[var(--text-tertiary)] p-2 rounded hover:bg-[var(--well-hover)] opacity-0 group-hover:opacity-100"
                                 title="Remove file"
                             >
                                 <CloseIcon className="w-5 h-5"/>

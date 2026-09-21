@@ -50,15 +50,15 @@ describe('Converter Engines', () => {
             expect(engine.canHandle('csv', 'pdf')).toBe(true);
             expect(engine.canHandle('md', 'pdf')).toBe(true);
             expect(engine.canHandle('epub', 'pdf')).toBe(true);
-            expect(engine.canHandle('pdf', 'docx')).toBe(false); // Only outputs PDF
+            expect(engine.canHandle('pdf', 'docx')).toBe(false); // PDF -> DOCX moved to PdfToDocxEngine
             expect(engine.canHandle('png', 'pdf')).toBe(true); // Rasterized via LibreOffice
             expect(engine.canHandle('svg', 'pdf')).toBe(true);
             expect(engine.canHandle('bmp', 'pdf')).toBe(true);
         });
 
         it('should execute soffice with correct arguments', async () => {
-            (fs.stat as any).mockResolvedValue({ size: 1024 });
-            (SandboxRunner.execute as any).mockResolvedValue('success');
+            (fs.stat as ReturnType<typeof vi.fn>).mockResolvedValue({ size: 1024 });
+            (SandboxRunner.execute as ReturnType<typeof vi.fn>).mockResolvedValue('success');
 
             const result = await engine.convert('/input/file.docx', '/output', 'docx', 'pdf');
 

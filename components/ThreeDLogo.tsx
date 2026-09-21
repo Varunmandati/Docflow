@@ -58,14 +58,14 @@ const ThreeDLogo: React.FC<ThreeDLogoProps> = ({ collapsed = false, style }) => 
         height: '100%',
         transformStyle: 'preserve-3d',
         transform: `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)`,
-        transition: isHovered ? 'transform 0.05s ease-out' : 'transform 0.5s cubic-bezier(0.25, 1, 0.5, 1)',
+        transition: isHovered ? 'transform 0.05s ease-out' : 'transform 0.5s var(--ease-out-quart)',
         willChange: 'transform',
     };
 
     // Layer 1: Logo Icon (pops out further)
     const logoIconStyle: React.CSSProperties = {
         transform: isHovered ? 'translateZ(24px) scale(1.05)' : 'translateZ(0px) scale(1)',
-        transition: 'transform 0.2s cubic-bezier(0.25, 1, 0.5, 1)',
+        transition: 'transform 0.2s var(--ease-out-quart)',
         color: 'var(--logo-color)',
         flexShrink: 0,
         width: '34px',
@@ -79,7 +79,7 @@ const ThreeDLogo: React.FC<ThreeDLogoProps> = ({ collapsed = false, style }) => 
         overflow: 'hidden',
         marginLeft: '10px',
         transform: isHovered ? 'translateZ(12px) scale(1.02)' : 'translateZ(0px) scale(1)',
-        transition: 'transform 0.2s cubic-bezier(0.25, 1, 0.5, 1), max-width 0.3s ease-in-out, opacity 0.3s ease-in-out',
+        transition: 'transform 0.2s var(--ease-out-quart), max-width 0.3s var(--ease-emphasized), opacity 0.3s var(--ease-emphasized)',
         maxWidth: collapsed ? '0' : '180px',
         opacity: collapsed ? 0 : 1,
     };

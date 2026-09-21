@@ -84,8 +84,8 @@ export async function filesRoutes(app: FastifyInstance) {
         }
 
         try {
-            const user = await extractFirebaseUser(request as any);
-            const userId = user?.uid ?? null;
+            const user = await extractFirebaseUser(request);
+            const userId = user?.uid ?? undefined;
 
             // Jobs carry an FK to users; ensure the row exists for this caller
             // so job creation below never fails on a missing user.
@@ -144,7 +144,7 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        const user = await extractFirebaseUser(request as any);
+        const user = await extractFirebaseUser(request);
         const userId = user?.uid ?? null;
 
         const uploaded = await getUploadMetaForUser(parsed.data.fileId, userId);
@@ -170,7 +170,7 @@ export async function filesRoutes(app: FastifyInstance) {
         // Persistent record in PostgreSQL — the row id matches the BullMQ job id
         await jobService.createJob({
             id: jobId,
-            userId,
+            userId: userId ?? undefined,
             bullmqJobId: jobId,
             jobType: 'conversion',
             inputFilename: uploaded.originalName,
@@ -190,7 +190,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
         try {
             auditService.log({
-                userId,
+                userId: userId ?? undefined,
                 eventType: 'job.created',
                 severity: 'info',
                 ipAddress: request.ip,
@@ -227,7 +227,7 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        const user = await extractFirebaseUser(request as any);
+        const user = await extractFirebaseUser(request);
         const userId = user?.uid ?? null;
 
         const uploaded = await getUploadMetaForUser(parsed.data.fileId, userId);
@@ -255,7 +255,7 @@ export async function filesRoutes(app: FastifyInstance) {
         // Persistent record in PostgreSQL — the row id matches the BullMQ job id
         await jobService.createJob({
             id: jobId,
-            userId,
+            userId: userId ?? undefined,
             bullmqJobId: jobId,
             jobType: 'compression',
             inputFilename: uploaded.originalName,
@@ -275,7 +275,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
         try {
             auditService.log({
-                userId,
+                userId: userId ?? undefined,
                 eventType: 'job.created',
                 severity: 'info',
                 ipAddress: request.ip,
@@ -312,7 +312,7 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        const user = await extractFirebaseUser(request as any);
+        const user = await extractFirebaseUser(request);
         const userId = user?.uid ?? null;
 
         // Fetch all image file metadata — ownership-scoped so users cannot
@@ -354,13 +354,13 @@ export async function filesRoutes(app: FastifyInstance) {
             imageFilePaths: imageMetas.map((m) => m!.path),
             imageNames: imageMetas.map((m) => m!.originalName),
             outputFileName,
-            userId,
+            userId: userId ?? undefined,
         };
 
         // Persistent record in PostgreSQL — the row id matches the BullMQ job id
         await jobService.createJob({
             id: jobId,
-            userId,
+            userId: userId ?? undefined,
             bullmqJobId: jobId,
             jobType: 'compression',
             inputFilename: outputFileName,
@@ -399,7 +399,7 @@ export async function filesRoutes(app: FastifyInstance) {
     });
 
     app.get('/v1/files/:fileId/download', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
-        const user = await extractFirebaseUser(request as any);
+        const user = await extractFirebaseUser(request);
         const uid = user?.uid || null;
 
         const params = request.params as { fileId: string };
@@ -486,7 +486,7 @@ export async function filesRoutes(app: FastifyInstance) {
         }
 
         reply.header('Content-Type', contentType);
-        reply.header('Content-Disposition', `attachment; filename="${fileName}"`);
+        reply.header('Content-Disposition', `attachment; filename="${safeHeaderFilename(fileName)}"`);
         return reply.send(fs.createReadStream(absolutePath));
     });
 }

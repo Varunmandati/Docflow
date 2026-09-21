@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import http from 'http';
 import { env } from '../../config/env.js';
+import { verifyFirebaseToken } from '../../middleware/firebase.middleware.js';
 
 /**
  * Reverse proxy for the streamtor torrent server.
@@ -62,9 +63,18 @@ function forwardRequest(request: FastifyRequest, reply: FastifyReply, target: UR
             path: `${target.pathname}${target.search}`,
             method: request.method,
             headers,
+            // 10 minute timeout for large torrent file downloads
+            timeout: 600000,
         },
         (proxyRes) => {
-            reply.raw.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            // Strip hop-by-hop response headers
+            const respHeaders: Record<string, string> = {};
+            for (const [key, value] of Object.entries(proxyRes.headers)) {
+                if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
+                if (typeof value === 'string') respHeaders[key] = value;
+                else if (Array.isArray(value)) respHeaders[key] = value.join(', ');
+            }
+            reply.raw.writeHead(proxyRes.statusCode || 502, respHeaders);
             proxyRes.pipe(reply.raw);
         }
     );
@@ -75,6 +85,15 @@ function forwardRequest(request: FastifyRequest, reply: FastifyReply, target: UR
             reply.raw.writeHead(502, { 'content-type': 'application/json' });
         }
         reply.raw.end(JSON.stringify({ success: false, message: 'Torrent server unavailable.' }));
+    });
+
+    proxyReq.on('timeout', () => {
+        request.log.error('Streamtor proxy upstream timeout');
+        proxyReq.destroy();
+        if (!reply.raw.headersSent) {
+            reply.raw.writeHead(504, { 'content-type': 'application/json' });
+        }
+        reply.raw.end(JSON.stringify({ success: false, message: 'Torrent server request timed out.' }));
     });
 
     reply.raw.on('close', () => {
@@ -91,11 +110,11 @@ export async function torrentProxyRoutes(app: FastifyInstance) {
         throw new Error('STREAMTOR_INTERNAL_URL is not configured');
     }
 
-    app.all('/api/torrents', async (request, reply) => {
+    app.all('/api/torrents', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
         forwardRequest(request, reply, buildTargetUrl(request));
     });
 
-    app.all('/api/torrents/*', async (request, reply) => {
+    app.all('/api/torrents/*', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
         forwardRequest(request, reply, buildTargetUrl(request));
     });
 }

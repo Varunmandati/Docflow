@@ -84,6 +84,24 @@ export class UserService {
 
       const user = result.rows[0];
 
+      // Keep the stored email in sync with the Firebase token. The ON CONFLICT
+      // upsert intentionally does not touch email (to avoid racing with the
+      // email-change flow), so reconcile here only when the stored email
+      // differs AND no other active account owns the target address.
+      if (user.email !== normalizedEmail) {
+        const collision = await client.query(
+          `SELECT 1 FROM users WHERE email = $1 AND id <> $2 AND is_active = TRUE`,
+          [normalizedEmail, user.id]
+        );
+        if (collision.rowCount === 0) {
+          await client.query(
+            `UPDATE users SET email = $1, email_verified = TRUE WHERE id = $2`,
+            [normalizedEmail, user.id]
+          );
+          user.email = normalizedEmail;
+        }
+      }
+
       // Create default preferences if new user
       await client.query(
         `INSERT INTO user_preferences (user_id) VALUES ($1)
@@ -113,13 +131,39 @@ export class UserService {
 
       const row = result.rows[0] as any;
       const {
-        language, theme, accent_color, font_size, font_family,
-        default_compression, auto_delete_files, email_notifications,
-        output_folder_path, background_animation, ...userData
+        id,
+        email,
+        display_name,
+        avatar_url,
+        auth_provider,
+        email_verified,
+        is_active,
+        storage_used_bytes,
+        last_login_at,
+        created_at,
+        language,
+        theme,
+        accent_color,
+        font_size,
+        font_family,
+        default_compression,
+        auto_delete_files,
+        email_notifications,
+        output_folder_path,
+        background_animation
       } = row;
 
       return {
-        ...userData,
+        id,
+        email,
+        display_name: display_name ?? null,
+        avatar_url: avatar_url ?? null,
+        auth_provider,
+        email_verified,
+        is_active,
+        storage_used_bytes,
+        last_login_at: last_login_at ?? null,
+        created_at,
         preferences: {
           language,
           theme,
@@ -132,7 +176,7 @@ export class UserService {
           output_folder_path,
           background_animation
         }
-      };
+      } as User & { preferences: Record<string, any> };
     });
   }
 }

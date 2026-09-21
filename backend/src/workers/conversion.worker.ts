@@ -19,7 +19,10 @@ import { PdfEngine } from '../services/converters/PdfEngine.js';
 import { ArchiveEngine } from '../services/converters/ArchiveEngine.js';
 import { IcoEngine } from '../services/converters/IcoEngine.js';
 import { HeicEngine } from '../services/converters/HeicEngine.js';
+import { PdfToDocxLayoutEngine } from '../services/converters/PdfToDocxLayoutEngine.js';
+import { PdfToDocxEngine } from '../services/converters/PdfToDocxEngine.js';
 import { ConverterEngine, EngineConversionResult } from '../services/converters/ConverterEngine.js';
+import { applyPdfOptions } from '../services/pdf-postprocess.service.js';
 import { SandboxRunner } from '../utils/sandboxRunner.js';
 
 const toDownloadUrl = (relativePath: string) => `/v1/files/download?path=${encodeURIComponent(relativePath)}`;
@@ -30,6 +33,8 @@ const OFFICE_FORMATS = new Set(['doc', 'docx', 'odt', 'rtf', 'txt', 'html', 'md'
 const LO_RASTER_SOURCES = new Set(['bmp']);
 
 const ENGINES: ConverterEngine[] = [
+    // Conditionally load the PDF->DOCX engine based on feature flag
+    (process.env.PDF_DOCX_ENGINE === 'legacy' ? new PdfToDocxLayoutEngine() : new PdfToDocxEngine()),
     new LibreOfficeEngine(),
     new IcoEngine(),
     new HeicEngine(),
@@ -178,6 +183,16 @@ export function startConversionWorker(): Worker<ConversionJobData> {
             } else if (resultInfo) {
                 primaryRef = await buildRef(resultInfo.outputPath, resultInfo.pages);
                 if (targetFormat === 'pdf') {
+                    // Apply watermark and/or password protection to PDF outputs
+                    if (options?.watermark || options?.password) {
+                        await updateJobStatus(jobId, {
+                            stage: 'post-processing',
+                            progress: 90,
+                            message: 'Applying watermark and protection to PDF.',
+                        });
+                        const pdfResult = await applyPdfOptions(resultInfo.outputPath, options);
+                        primaryRef = await buildRef(pdfResult.outputPath, resultInfo.pages);
+                    }
                     pdfRef = primaryRef;
                 } else if (['jpg', 'png'].includes(targetFormat)) {
                     imageRefs = [primaryRef];

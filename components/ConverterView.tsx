@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { renderAsync } from 'docx-preview';
-import { Document, Packer, ImageRun, Paragraph, PageBreak, AlignmentType, TextRun, ExternalHyperlink, HeadingLevel } from 'docx';
-import { AppFile, DownloadableFile, HistoryEntry, PageSize, Orientation, ColorMode, OutputFormat, SecurityOptions, PageInfo, DocxBlock, DocxRun } from '../types';
+import { Document, Packer, ImageRun, Paragraph, PageBreak, AlignmentType, TextRun, ExternalHyperlink, HeadingLevel, Table, TableRow, TableCell, WidthType, VerticalAlign, BorderStyle } from 'docx';
+import { AppFile, DownloadableFile, HistoryEntry, PageSize, Orientation, ColorMode, OutputFormat, SecurityOptions, PageInfo, DocxBlock, DocxRun, PageGeometry } from '../types';
 import FileDropzone from './FileDropzone';
 import FileList from './FileList';
 import ProgressBar from './ProgressBar';
@@ -10,7 +10,7 @@ import DownloadList from './DownloadList';
 import PageManagerModal from './PageManagerModal';
 import ImageOrderManager from './ImageOrderManager';
 import ConversionOptions, { CompressionLevel } from './ConversionOptions';
-import { CheckIcon, UploadIcon, ResetIcon, SpinnerIcon, PlusIcon } from './Icons';
+import { CheckIcon, UploadIcon, ResetIcon, SpinnerIcon, PlusIcon, FileTextIcon, ArrowUpRightIcon } from './Icons';
 import { ConverterTranslation } from '../translations';
 import { useToast } from '../hooks/useToast';
 import UploadProgressIndicator from './UploadProgressIndicator';
@@ -30,9 +30,11 @@ interface ConverterViewProps {
     defaultCompression: CompressionLevel;
     autoDelete: boolean;
     t: ConverterTranslation;
+    isAuthenticated?: boolean;
+    onAuthClick?: () => void;
 }
 
-const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversionComplete, onAddToHistory, defaultCompression, autoDelete, t }) => {
+const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversionComplete, onAddToHistory, defaultCompression, autoDelete, t, isAuthenticated, onAuthClick }) => {
     const [files, setFiles] = useState<AppFile[]>([]);
     const [isConverting, setIsConverting] = useState<boolean>(false);
     const [progress, setProgress] = useState<{ current: number, total: number, percentage: number }>({ current: 0, total: 0, percentage: 0 });
@@ -92,8 +94,9 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     };
 
     const getConversionApiBase = (): string => {
-        const raw = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').trim();
-        if (!raw) return 'http://localhost:8080';
+        const raw = (import.meta.env.VITE_API_BASE_URL || '').trim();
+        // Empty base: use relative /v1/... URLs, which the Vite dev proxy
+        // forwards to the backend (http://127.0.0.1:8090 locally).
         return raw.replace(/\/api\/?$/, '');
     };
 
@@ -154,6 +157,12 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             body: uploadForm,
         });
 
+        if (uploadResponse.status === 401) {
+            addToast(t.status.signInRequired || 'Sign in is required to convert office documents.', 'error');
+            if (onAuthClick) onAuthClick();
+            throw new Error('Sign in is required to convert office documents.');
+        }
+
         if (!uploadResponse.ok) {
             const details = await uploadResponse.text();
             throw new Error(`Upload failed for ${appFile.file.name}: ${details}`);
@@ -171,6 +180,15 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             options.images = true;
             options.imageFormat = outputFormat;
             options.dpi = 200;
+        }
+        if (watermark) {
+            options.watermark = { text: watermark };
+        }
+        if (securityOptions.password) {
+            options.password = securityOptions.password;
+        }
+        if (addPageNumbers) {
+            options.pageNumbers = true;
         }
 
         const convertResponse = await authFetch(buildApiUrl(apiBase, '/v1/convert'), {
@@ -244,6 +262,19 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             }];
         }
 
+        // Handle DOCX output from backend (PDF -> DOCX via LibreOffice)
+        if (outputFormat === 'docx') {
+            const docxRef = resultPayload?.outputs?.primary;
+            if (!docxRef?.downloadUrl) {
+                throw new Error(`DOCX output missing for ${appFile.file.name}`);
+            }
+            return [{
+                name: baseName,
+                url: buildApiUrl(apiBase, docxRef.downloadUrl),
+                format: 'docx',
+            }];
+        }
+
         const images = resultPayload?.outputs?.images;
         const imageList = Array.isArray(images) && images.length > 0
             ? images
@@ -259,96 +290,57 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         }));
     };
 
-    const runBatchImageConversionViaBackend = async (
-        imageFileIds: string[],
-        imageFiles: File[]
-    ): Promise<DownloadableFile> => {
-        const apiBase = getConversionApiBase();
+    const mergeImagesToPdfClientSide = async (orderedFiles: File[]): Promise<DownloadableFile> => {
+        const { jsPDF } = jspdf;
+        const baseName = orderedFiles[0]?.name?.split('.')[0] || 'combined';
 
-        if (imageFileIds.length === 0) {
-            throw new Error('No image files to combine');
+        const canvases: HTMLCanvasElement[] = [];
+        for (const file of orderedFiles) {
+            const appFile = files.find(f => f.file === file);
+            const existingCanvas = appFile?.pages?.[0]?.originalCanvas;
+            if (existingCanvas) {
+                canvases.push(existingCanvas);
+                continue;
+            }
+            const canvas = await new Promise<HTMLCanvasElement>((resolve, reject) => {
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+                img.onload = () => {
+                    const c = document.createElement('canvas');
+                    c.width = img.width;
+                    c.height = img.height;
+                    c.getContext('2d')?.drawImage(img, 0, 0);
+                    URL.revokeObjectURL(url);
+                    resolve(c);
+                };
+                img.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    reject(new Error(`Could not read image: ${file.name}`));
+                };
+                img.src = url;
+            });
+            canvases.push(canvas);
         }
 
-        setStatusMessage('Sending batch image conversion request to backend...');
-        setProgress({ current: 1, total: imageFileIds.length + 5, percentage: 20 });
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const availableWidth = pageWidth - margin * 2;
+        const availableHeight = pageHeight - margin * 2;
 
-        const combinePdfResponse = await authFetch(buildApiUrl(apiBase, '/v1/images/combine-to-pdf'), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                imageFileIds,
-                outputFileName: `combined-images-${Date.now()}.pdf`,
-            }),
+        canvases.forEach((canvas, index) => {
+            if (index > 0) pdf.addPage('a4', 'portrait');
+            const ratio = Math.min(availableWidth / canvas.width, availableHeight / canvas.height);
+            const width = canvas.width * ratio;
+            const height = canvas.height * ratio;
+            pdf.addImage(canvas.toDataURL('image/png'), 'PNG', (pageWidth - width) / 2, (pageHeight - height) / 2, width, height);
         });
 
-        if (!combinePdfResponse.ok) {
-            const details = await combinePdfResponse.text();
-            throw new Error(`Batch image conversion request failed: ${details}`);
-        }
-
-        const combinePdfPayload = await combinePdfResponse.json();
-        const jobId = combinePdfPayload.jobId as string;
-        if (!jobId) {
-            throw new Error('Backend batch image conversion did not return jobId');
-        }
-
-        setStatusMessage('Processing batch image conversion on backend...');
-
-        let done = false;
-        let pollCount = 0;
-        while (!done) {
-            const statusResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}`));
-            if (!statusResponse.ok) {
-                const details = await statusResponse.text();
-                throw new Error(`Status check failed: ${details}`);
-            }
-
-            const statusPayload = await statusResponse.json();
-            const backendProgress = typeof statusPayload.progress === 'number' ? statusPayload.progress : 0;
-            setProgress({
-                current: Math.min(imageFileIds.length + 3, imageFileIds.length + 3 + Math.floor((backendProgress / 100) * 2)),
-                total: imageFileIds.length + 5,
-                percentage: Math.round((backendProgress / 100) * 80 + 20),
-            });
-            setStatusMessage(`${statusPayload.message || 'Processing images...'}`) ;
-
-            if (statusPayload.status === 'failed') {
-                throw new Error(statusPayload.error || 'Backend batch image conversion failed');
-            }
-
-            if (statusPayload.status === 'completed') {
-                done = true;
-                break;
-            }
-
-            await sleep(1000);
-            pollCount++;
-            if (pollCount > 180) {
-                throw new Error('Batch image conversion timeout');
-            }
-        }
-
-        const resultResponse = await authFetch(buildApiUrl(apiBase, `/v1/jobs/${jobId}/result`));
-        if (!resultResponse.ok) {
-            const details = await resultResponse.text();
-            throw new Error(`Result fetch failed: ${details}`);
-        }
-
-        const resultPayload = await resultResponse.json();
-        const pdfRef = resultPayload?.outputs?.pdf;
-        if (!pdfRef?.downloadUrl) {
-            throw new Error('PDF output missing from batch conversion');
-        }
-
-        const combinedFileName = `${imageFiles[0]?.name?.split('.')[0] || 'combined'}-all-pages`;
-
-        setProgress({ current: imageFileIds.length + 5, total: imageFileIds.length + 5, percentage: 100 });
-
+        const blob = pdf.output('blob');
         return {
-            name: combinedFileName,
-            url: buildApiUrl(apiBase, pdfRef.downloadUrl),
+            name: `${baseName}-all-pages`,
+            url: URL.createObjectURL(blob),
             format: 'pdf',
         };
     };
@@ -424,7 +416,13 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                             page.getTextContent(),
                             page.getAnnotations().catch(() => []),
                         ]);
-                        const docxBlocks = extractPdfDocxBlocks(textContent, annotations);
+
+                        // Get actual PDF page dimensions (in points, 72 dpi)
+                        const pdfPage = await page.getViewport({ scale: 1.0 });
+                        const pdfWidth = pdfPage.width;
+                        const pdfHeight = pdfPage.height;
+
+                        const { blocks: docxBlocks, columnBlocks: docxColumnBlocks, columnCount, geometry } = extractPdfDocxBlocks(textContent, annotations, pdfWidth, pdfHeight);
                         const text = blocksToPlainParagraphs(docxBlocks);
 
                         pages.push({
@@ -434,6 +432,9 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                             originalCanvas: canvas,
                             text,
                             docxBlocks,
+                            docxColumnBlocks,
+                            columnCount,
+                            pageGeometry: geometry,
                         });
                     }
                 } else if (appFile.file.type === 'image/tiff' || appFile.file.name.toLowerCase().endsWith('.tif') || appFile.file.name.toLowerCase().endsWith('.tiff')) {
@@ -651,50 +652,15 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         }
 
         setIsConverting(true);
-        setStatusMessage('Uploading images to backend...');
-        setProgress({ current: 0, total: orderedFiles.length + 5, percentage: 0 });
+        setStatusMessage('Combining images into PDF...');
+        setProgress({ current: 0, total: 3, percentage: 10 });
 
         try {
-            // Upload all images and get their IDs
-            const uploadedIds: string[] = [];
-            for (let i = 0; i < orderedFiles.length; i++) {
-                const file = orderedFiles[i];
-                const apiBase = getConversionApiBase();
-                
-                const uploadForm = new FormData();
-                uploadForm.append('file', file, file.name);
-
-                const uploadResponse = await authFetch(buildApiUrl(apiBase, '/v1/files/upload'), {
-                    method: 'POST',
-                    body: uploadForm,
-                });
-
-                if (!uploadResponse.ok) {
-                    throw new Error(`Failed to upload image ${i + 1}: ${file.name}`);
-                }
-
-                const uploadPayload = await uploadResponse.json();
-                const fileId = uploadPayload.fileId as string;
-                if (!fileId) {
-                    throw new Error(`Upload did not return fileId for ${file.name}`);
-                }
-
-                uploadedIds.push(fileId);
-                setProgress({
-                    current: i + 1,
-                    total: orderedFiles.length + 5,
-                    percentage: Math.round(((i + 1) / (orderedFiles.length + 3)) * 20),
-                });
-                setStatusMessage(`Uploaded image ${i + 1} of ${orderedFiles.length}`);
-            }
-
-            // Now process the batch conversion
-            setProgress({ current: orderedFiles.length + 1, total: orderedFiles.length + 5, percentage: 20 });
-            const combinedPdf = await runBatchImageConversionViaBackend(uploadedIds, orderedFiles);
+            const combinedPdf = await mergeImagesToPdfClientSide(orderedFiles);
 
             setDownloadableFiles([combinedPdf]);
             setStatusMessage('✓ Images successfully combined into PDF');
-            setProgress({ current: orderedFiles.length + 5, total: orderedFiles.length + 5, percentage: 100 });
+            setProgress({ current: 3, total: 3, percentage: 100 });
 
             // Close the image order manager
             setIsImageOrderManagerOpen(false);
@@ -717,7 +683,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         } finally {
             setIsConverting(false);
         }
-    }, [addToast, autoDelete, onConversionComplete, onAddToHistory, getConversionApiBase, buildApiUrl]);
+    }, [addToast, autoDelete, onConversionComplete, onAddToHistory, files]);
     
     const handleFilesAdded = useCallback((acceptedFiles: File[]) => {
         processAndAddFiles(acceptedFiles);
@@ -852,9 +818,86 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         return rotatedCanvas;
     };
 
-    const extractPdfDocxBlocks = (textContent: any, annotations: any[]): DocxBlock[] => {
-        interface RawRun { x: number; y: number; h: number; w: number; size: number; str: string; bold: boolean; italic: boolean; }
+    const normalizePdfFontName = (fontName: string): string => {
+        let name = fontName
+            .replace(/^[A-Z]{6}\+/, '')       // Remove PDF subset prefix like ABCDEF+
+            .replace(/,.*$/, '')                // Remove comma suffixes
+            .trim();
+        const lower = name.toLowerCase();
+        // Map common PDF font names to standard Word fonts
+        const fontMap: Record<string, string> = {
+            'arialmt': 'Arial',
+            'arial': 'Arial',
+            'helvetica': 'Arial',
+            'timesnewromanpsmt': 'Times New Roman',
+            'timesnewroman': 'Times New Roman',
+            'times-roman': 'Times New Roman',
+            'times': 'Times New Roman',
+            'courier': 'Courier New',
+            'couriernew': 'Courier New',
+            'couriernewpsmt': 'Courier New',
+            'georgia': 'Georgia',
+            'verdana': 'Verdana',
+            'tahoma': 'Tahoma',
+            'trebuchet': 'Trebuchet MS',
+            'calibri': 'Calibri',
+            'cambria': 'Cambria',
+            'garamond': 'Garamond',
+            'bookman': 'Bookman Old Style',
+            'palatino': 'Palatino Linotype',
+            'lucida console': 'Lucida Console',
+            'symbol': 'Symbol',
+            'wingdings': 'Wingdings',
+        };
+        if (fontMap[lower]) return fontMap[lower];
+        // Return title-cased version
+        return name.split(/[\s_-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    };
+
+    const detectAlignment = (runs: { x: number; w: number; str: string }[], pageWidth: number, marginX: number): 'left' | 'center' | 'right' | 'justify' => {
+        if (runs.length === 0) return 'left';
+        if (runs.length === 1) {
+            const r = runs[0];
+            const center = pageWidth / 2;
+            const runCenter = r.x + r.w / 2;
+            if (Math.abs(runCenter - center) < pageWidth * 0.05) return 'center';
+            if (r.x > pageWidth - marginX * 1.5) return 'right';
+            return 'left';
+        }
+        const firstX = runs[0].x;
+        const lastRun = runs[runs.length - 1];
+        const lastEnd = lastRun.x + lastRun.w;
+        const centerX = pageWidth / 2;
+        const avgRunCenter = runs.reduce((sum, r) => sum + r.x + r.w / 2, 0) / runs.length;
+        const isCentered = Math.abs(avgRunCenter - centerX) < pageWidth * 0.06 && Math.abs(firstX - (pageWidth - lastEnd)) < marginX * 1.5;
+        if (isCentered) return 'center';
+        const rightAligned = firstX > pageWidth * 0.4 && lastEnd > pageWidth - marginX * 0.3;
+        if (rightAligned && runs.length <= 3) return 'right';
+        const gaps: number[] = [];
+        for (let i = 1; i < runs.length; i++) {
+            gaps.push(runs[i].x - (runs[i - 1].x + runs[i - 1].w));
+        }
+        const avgGap = gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
+        const rightMarginGap = pageWidth - lastEnd;
+        if (rightMarginGap < marginX * 0.3 && avgGap < marginX * 0.2) return 'justify';
+        return 'left';
+    };
+
+    const extractPdfDocxBlocks = (textContent: any, annotations: any[], pageWidth?: number, pageHeight?: number): { blocks: DocxBlock[]; columnBlocks: DocxBlock[][]; columnCount: number; geometry: PageGeometry } => {
+        interface RawRun {
+            x: number; y: number; h: number; w: number;
+            size: number; str: string;
+            bold: boolean; italic: boolean; underline: boolean;
+            fontFamily: string; color: string;
+            hasEOL: boolean;
+        }
         const styles: Record<string, any> = textContent?.styles || {};
+        const pw = pageWidth || 612;
+        const ph = pageHeight || 792;
+        const marginLeft = pw * 0.1;
+        const marginRight = pw * 0.1;
+        const marginTop = ph * 0.08;
+        const marginBottom = ph * 0.08;
 
         const rawRuns: RawRun[] = [];
         for (const it of (textContent?.items || [])) {
@@ -864,10 +907,17 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             if (!m || m.length < 6) continue;
 
             const st = it.fontName ? styles[it.fontName] : null;
-            const fontFamily = String(st?.fontFamily || it.font?.name || it.fontName || '').toLowerCase();
+            const rawFontName = String(st?.fontFamily || it.font?.name || it.fontName || '');
+            const fontFamily = normalizePdfFontName(rawFontName);
             const fontSize = Math.abs(st?.fontSize || 0) || Math.abs(it.height ?? 0) || 10;
-            const bold = /\bbold\b|\bblack\b|\bsemibold\b|\bheavy\b/.test(fontFamily);
-            const italic = /\bitalic\b|\boblique\b/.test(fontFamily);
+            const bold = /\bbold\b|\bblack\b|\bsemibold\b|\bheavy\b/i.test(rawFontName);
+            const italic = /\bitalic\b|\boblique\b|\bcondensed\b/i.test(rawFontName);
+            const underline = /\bunderlined?\b/i.test(rawFontName);
+            let color = '';
+            if (it.color && Array.isArray(it.color) && it.color.length >= 3) {
+                const [r, g, b] = it.color;
+                color = `#${Math.round(r * 255).toString(16).padStart(2, '0')}${Math.round(g * 255).toString(16).padStart(2, '0')}${Math.round(b * 255).toString(16).padStart(2, '0')}`;
+            }
 
             rawRuns.push({
                 x: m[4],
@@ -878,11 +928,14 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 str: s,
                 bold,
                 italic,
+                underline,
+                fontFamily,
+                color,
+                hasEOL: !!it.hasEOL,
             });
         }
-        if (rawRuns.length === 0) return [];
+        if (rawRuns.length === 0) return { blocks: [], columnBlocks: [], columnCount: 1, geometry: { width: pw, height: ph, marginLeft, marginRight, marginTop, marginBottom } };
 
-        // Build link rects (PDF page coordinates, same space as text items).
         const linkRects: { url: string; x1: number; y1: number; x2: number; y2: number }[] = [];
         for (const a of (annotations || [])) {
             if (a?.subtype === 'Link' && a?.url && Array.isArray(a?.rect) && a.rect.length === 4) {
@@ -890,24 +943,177 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 linkRects.push({ url: a.url, x1, y1, x2, y2 });
             }
         }
-
         const findUrl = (x: number, y: number, w: number, h: number): string | undefined => {
+            const cx = x + w / 2;
+            const cy = y + h / 2;
             for (const lr of linkRects) {
-                const cx = x + w / 2;
-                const cy = y + h / 2;
                 if (cx >= lr.x1 && cx <= lr.x2 && cy >= lr.y1 && cy <= lr.y2) return lr.url;
             }
             return undefined;
         };
 
-        // Sort top-to-bottom, then left-to-right (PDF y grows upward).
+        const columnRanges = detectColumns(rawRuns, pw);
+
+        const allBlocks: DocxBlock[] = [];
+        const columnBlocks: DocxBlock[][] = [];
+
+        if (columnRanges.length >= 2) {
+            // Identify the gap between columns to detect full-width elements
+            const sortedRanges = [...columnRanges].sort((a, b) => a.minX - b.minX);
+            const gapRight = sortedRanges[0].maxX;
+            const gapLeft = sortedRanges[1].minX;
+
+            // Group raw runs into visual lines by Y proximity
+            const sortedRunsForLines = [...rawRuns].sort((a, b) => (b.y - a.y) || (a.x - b.x));
+            const visualLinesForDetection: { y: number; runs: typeof rawRuns[number][] }[] = [];
+            for (const r of sortedRunsForLines) {
+                const last = visualLinesForDetection[visualLinesForDetection.length - 1];
+                if (last && Math.abs(last.y - r.y) <= Math.max(last.runs[0]?.h || 0, r.h) * 0.5) {
+                    last.runs.push(r);
+                } else {
+                    visualLinesForDetection.push({ y: r.y, runs: [r] });
+                }
+            }
+
+            // Mark runs that belong to full-width lines (span across the column gap)
+            const fullWidthRunSet = new Set<number>();
+            for (const vl of visualLinesForDetection) {
+                if (vl.runs.length < 2) continue;
+                const minX = Math.min(...vl.runs.map(r => r.x));
+                const maxX = Math.max(...vl.runs.map(r => r.x + r.w));
+                // A line is full-width if it spans across the gap between columns
+                if (minX < gapRight && maxX > gapLeft) {
+                    for (const r of vl.runs) {
+                        const idx = rawRuns.indexOf(r);
+                        if (idx >= 0) fullWidthRunSet.add(idx);
+                    }
+                }
+            }
+
+            // Separate full-width runs from column-only runs
+            const fullWidthRuns = rawRuns.filter((_, i) => fullWidthRunSet.has(i));
+            const columnOnlyRuns = rawRuns.filter((_, i) => !fullWidthRunSet.has(i));
+
+            // Process full-width runs as single-column blocks
+            if (fullWidthRuns.length > 0) {
+                const fullBlocks = processColumnRunsEnhanced(fullWidthRuns, findUrl, pw, pw, marginLeft);
+                for (const b of fullBlocks) b.fullWidth = true;
+                allBlocks.push(...fullBlocks);
+            }
+
+            // Process column-only runs into their respective columns
+            for (const colRange of columnRanges) {
+                const colRuns = columnOnlyRuns.filter(r => {
+                    const midX = r.x + r.w / 2;
+                    return midX >= colRange.minX && midX <= colRange.maxX;
+                });
+                if (colRuns.length === 0) continue;
+                const colBlocks = processColumnRunsEnhanced(colRuns, findUrl, colRange.maxX - colRange.minX, pw, marginLeft);
+                allBlocks.push(...colBlocks);
+                columnBlocks.push(colBlocks);
+            }
+        } else {
+            // Single column — process all runs together
+            const singleColBlocks = processColumnRunsEnhanced(rawRuns, findUrl, pw, pw, marginLeft);
+            allBlocks.push(...singleColBlocks);
+            columnBlocks.push(singleColBlocks);
+        }
+
+        return { blocks: allBlocks, columnBlocks, columnCount: columnRanges.length, geometry: { width: pw, height: ph, marginLeft, marginRight, marginTop, marginBottom } };
+    };
+
+    const detectColumns = (
+        rawRuns: { x: number; y: number; h: number; w: number; size: number; str: string; bold: boolean; italic: boolean }[],
+        pageWidth: number
+    ): { minX: number; maxX: number }[] => {
+        if (rawRuns.length === 0) return [{ minX: 0, maxX: pageWidth }];
+
+        // Build a histogram of X positions to find column boundaries
+        // Sample the left edge of each run
+        const xPositions = rawRuns.map(r => r.x).sort((a, b) => a - b);
+
+        // Find significant gaps using a density-based approach
+        const bucketSize = Math.max(pageWidth / 100, 1);
+        const buckets = new Map<number, number>();
+        for (const x of xPositions) {
+            const bucket = Math.floor(x / bucketSize);
+            buckets.set(bucket, (buckets.get(bucket) || 0) + 1);
+        }
+
+        // Find empty regions (gaps) between content
+        const sortedBuckets = Array.from(buckets.entries()).sort((a, b) => a[0] - b[0]);
+        const gaps: { start: number; end: number; size: number }[] = [];
+        for (let i = 1; i < sortedBuckets.length; i++) {
+            const gapStart = sortedBuckets[i - 1][0] + 1;
+            const gapEnd = sortedBuckets[i][0];
+            const gapSize = (gapEnd - gapStart) * bucketSize;
+            if (gapSize > pageWidth * 0.03) { // Gap must be at least 3% of page width
+                gaps.push({
+                    start: gapStart * bucketSize,
+                    end: gapEnd * bucketSize,
+                    size: gapSize,
+                });
+            }
+        }
+
+        // Sort gaps by size (largest first) - large gaps likely separate columns
+        gaps.sort((a, b) => b.size - a.size);
+
+        // If no significant gaps found, treat as single column
+        if (gaps.length === 0) {
+            return [{ minX: 0, maxX: pageWidth }];
+        }
+
+        // Use the top gaps as column separators (limit to reasonable number of columns)
+        const separators = gaps.slice(0, 2).sort((a, b) => a.start - b.start);
+
+        // Build column ranges
+        const ranges: { minX: number; maxX: number }[] = [];
+        let cursor = 0;
+        for (const sep of separators) {
+            if (sep.start > cursor) {
+                ranges.push({ minX: cursor, maxX: sep.start });
+            }
+            cursor = sep.end;
+        }
+        if (cursor < pageWidth) {
+            ranges.push({ minX: cursor, maxX: pageWidth });
+        }
+
+        // Only use column mode if we found 2+ columns with reasonable content distribution
+        if (ranges.length >= 2) {
+            // Verify each column has a reasonable amount of content
+            const minContentPerCol = rawRuns.length * 0.05; // At least 5% of runs per column
+            const validColumns = ranges.filter(range => {
+                const colCount = rawRuns.filter(r => {
+                    const midX = r.x + r.w / 2;
+                    return midX >= range.minX && midX <= range.maxX;
+                }).length;
+                return colCount >= minContentPerCol;
+            });
+            if (validColumns.length >= 2) {
+                return validColumns;
+            }
+        }
+
+        return [{ minX: 0, maxX: pageWidth }];
+    };
+
+    const processColumnRunsEnhanced = (
+        rawRuns: { x: number; y: number; h: number; w: number; size: number; str: string; bold: boolean; italic: boolean; underline: boolean; fontFamily: string; color: string; hasEOL: boolean }[],
+        findUrl: (x: number, y: number, w: number, h: number) => string | undefined,
+        colWidth: number,
+        pageWidth: number,
+        marginLeft: number
+    ): DocxBlock[] => {
+        // Sort top-to-bottom (PDF y grows upward), then left-to-right
         rawRuns.sort((a, b) => (b.y - a.y) || (a.x - b.x));
 
-        // Group into visual lines by baseline proximity.
-        const lines: { y: number; h: number; runs: RawRun[] }[] = [];
+        // Group into visual lines by baseline proximity
+        const lines: { y: number; h: number; runs: typeof rawRuns[number][] }[] = [];
         for (const r of rawRuns) {
             const last = lines[lines.length - 1];
-            if (last && Math.abs(last.y - r.y) <= Math.max(last.h, r.h) * 0.5) {
+            if (last && Math.abs(last.y - r.y) <= Math.max(last.h, r.h) * 0.4) {
                 last.runs.push(r);
                 last.h = Math.max(last.h, r.h);
             } else {
@@ -915,48 +1121,178 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             }
         }
 
-        // Body size = median font size across the page; larger lines are headings.
-        const sizes = rawRuns.map(r => r.size).sort((a, b) => a - b);
-        const bodySize = sizes.length ? sizes[Math.floor(sizes.length / 2)] : 12;
-
-        const blocks: DocxBlock[] = [];
-        let prevY: number | null = null;
-
+        // Sort runs within each line left-to-right
         for (const line of lines) {
             line.runs.sort((a, b) => a.x - b.x);
+        }
+
+        // Body size = median font size; larger text = headings
+        const sizes = rawRuns.map(r => r.size).sort((a, b) => a - b);
+        const bodySize = sizes.length ? sizes[Math.floor(sizes.length / 2)] : 12;
+        const bodyFont = rawRuns.find(r => Math.abs(r.size - bodySize) < 0.5)?.fontFamily || 'Times New Roman';
+
+        // Build text runs per line, adding spaces for horizontal gaps
+        const lineTexts: {
+            text: string;
+            runs: DocxRun[];
+            y: number;
+            h: number;
+            lineSize: number;
+            lineFont: string;
+            lineBold: boolean;
+            lineItalic: boolean;
+            xStart: number;
+            xEnd: number;
+            fullLineWidth: number;
+        }[] = [];
+
+        for (const line of lines) {
             const lineSize = Math.max(...line.runs.map(r => r.size));
+            const lineFont = line.runs.reduce((prev, r) => {
+                const count = line.runs.filter(rr => rr.fontFamily === prev).length;
+                const thisCount = line.runs.filter(rr => rr.fontFamily === r.fontFamily).length;
+                return thisCount > count ? r.fontFamily : prev;
+            }, line.runs[0]?.fontFamily || bodyFont);
+            const lineBold = line.runs.filter(r => r.bold).length > line.runs.length * 0.5;
+            const lineItalic = line.runs.filter(r => r.italic).length > line.runs.length * 0.5;
 
-            let type: DocxBlock['type'] = 'body';
-            if (lineSize > bodySize * 1.45) type = 'heading1';
-            else if (lineSize > bodySize * 1.2) type = 'heading2';
-            else if (lineSize > bodySize * 1.08) type = 'heading3';
-
-            const fullText = line.runs.map(r => r.str).join('');
-            if (/^\s*[•●◦▪‣·*]\s/.test(fullText)) type = 'list';
-
-            // Merge adjacent runs with identical formatting/link into one run.
             const merged: DocxRun[] = [];
-            for (const r of line.runs) {
+            for (let ri = 0; ri < line.runs.length; ri++) {
+                const r = line.runs[ri];
                 const url = findUrl(r.x, r.y, r.w, r.h);
+
+                // Smart spacing between runs based on horizontal gap
+                if (ri > 0) {
+                    const prev = line.runs[ri - 1];
+                    const gap = r.x - (prev.x + prev.w);
+                    const avgCharWidth = (prev.w / Math.max(prev.str.length, 1) + r.w / Math.max(r.str.length, 1)) / 2;
+                    const prevEndsWithSpace = prev.str.endsWith(' ');
+                    const nextStartsWithSpace = r.str.startsWith(' ');
+                    if (!prevEndsWithSpace && !nextStartsWithSpace && gap > avgCharWidth * 0.1) {
+                        const lastMerged = merged[merged.length - 1];
+                        if (lastMerged) {
+                            lastMerged.text += ' ';
+                        }
+                    }
+                }
+
+                const runColor = r.color && r.color !== '#000000' ? r.color : undefined;
                 const last = merged[merged.length - 1];
-                if (last && last.bold === r.bold && last.italic === r.italic && last.url === url) {
+                if (last && last.bold === (r.bold || lineBold) && last.italic === (r.italic || lineItalic) && last.url === url && last.fontFamily === lineFont && last.fontSize === Math.round(lineSize)) {
                     last.text += r.str;
                 } else {
-                    merged.push({ text: r.str, bold: r.bold, italic: r.italic, url });
+                    merged.push({
+                        text: r.str,
+                        bold: r.bold || lineBold,
+                        italic: r.italic || lineItalic,
+                        underline: r.underline,
+                        url,
+                        fontFamily: lineFont,
+                        fontSize: Math.round(lineSize),
+                        color: runColor,
+                    });
                 }
             }
 
-            // Paragraph separation via vertical whitespace.
-            const gap = prevY === null ? 0 : prevY - line.y;
-            const breakGap = Math.max(line.h * 1.6, 12);
-            if (gap > breakGap && blocks.length > 0) {
-                blocks.push({ type: 'spacer', runs: [] });
-            }
-
-            blocks.push({ type, runs: merged });
-            prevY = line.y;
+            const fullText = merged.map(r => r.text).join('');
+            const xStart = line.runs[0]?.x || 0;
+            const xEnd = line.runs[line.runs.length - 1]?.x + (line.runs[line.runs.length - 1]?.w || 0) || 0;
+            lineTexts.push({
+                text: fullText,
+                runs: merged,
+                y: line.y,
+                h: line.h,
+                lineSize,
+                lineFont,
+                lineBold,
+                lineItalic,
+                xStart,
+                xEnd,
+                fullLineWidth: xEnd - xStart,
+            });
         }
 
+        // Join consecutive lines into paragraphs
+        const blocks: DocxBlock[] = [];
+        let currentRuns: DocxRun[] = [];
+        let currentType: DocxBlock['type'] = 'body';
+        let currentFontSize = bodySize;
+        let currentFont = bodyFont;
+        let prevLineY: number | null = null;
+        let prevLineH = 0;
+        let prevLineSize = bodySize;
+        let prevLineFont = bodyFont;
+        let currentLineStartX = 0;
+
+        const flushParagraph = () => {
+            if (currentRuns.length > 0) {
+                const fullText = currentRuns.map(r => r.text).join('');
+                if (fullText.trim().length > 0) {
+                    // Determine alignment based on text position
+                    const paraAlignment = detectAlignment(
+                        [{ x: currentLineStartX, w: fullText.length * currentFontSize * 0.5, str: fullText }],
+                        pageWidth,
+                        marginLeft
+                    );
+                    blocks.push({
+                        type: currentType,
+                        runs: [...currentRuns],
+                        fontSize: Math.round(currentFontSize),
+                        fontFamily: currentFont,
+                        alignment: paraAlignment !== 'left' ? paraAlignment : 'left',
+                        isBold: currentRuns.some(r => r.bold),
+                        isItalic: currentRuns.some(r => r.italic),
+                    });
+                }
+                currentRuns = [];
+            }
+        };
+
+        for (const lt of lineTexts) {
+            const { text, runs, y, h, lineSize, lineFont, lineBold, lineItalic } = lt;
+
+            let thisType: DocxBlock['type'] = 'body';
+            if (lineSize > bodySize * 1.5) thisType = 'heading1';
+            else if (lineSize > bodySize * 1.25) thisType = 'heading2';
+            else if (lineSize > bodySize * 1.1) thisType = 'heading3';
+            if (/^\s*[•●◦▪‣·*]\s/.test(text)) thisType = 'list';
+
+            // Paragraph break conditions
+            const gap = prevLineY === null ? 0 : prevLineY - y;
+            const lineHeight = Math.max(h, prevLineH, lineSize * 1.2);
+            const largeGap = gap > lineHeight * 1.3;
+            const differentType = thisType !== currentType;
+            const isHeading = thisType !== 'body';
+            const prevWasHeading = currentType !== 'body';
+            const differentFont = lineFont !== prevLineFont && prevLineFont !== '';
+            const differentSize = Math.abs(lineSize - prevLineSize) > 1.5;
+
+            // Check if text is centered
+            const centerX = pageWidth / 2;
+            const lineCenter = (lt.xStart + lt.xEnd) / 2;
+            const isCentered = Math.abs(lineCenter - centerX) < pageWidth * 0.05;
+            const prevCentered = prevLineY !== null && Math.abs(currentLineStartX + (currentRuns.reduce((sum, r) => sum + r.text.length, 0) * currentFontSize * 0.5) / 2 - centerX) < pageWidth * 0.05;
+            const alignmentChanged = isCentered !== prevCentered && prevLineY !== null;
+
+            if (largeGap || differentType || isHeading || prevWasHeading || differentFont || differentSize || alignmentChanged || blocks.length === 0) {
+                flushParagraph();
+                currentType = thisType;
+                currentFontSize = lineSize;
+                currentFont = lineFont;
+                currentLineStartX = lt.xStart;
+            }
+
+            for (const run of runs) {
+                currentRuns.push(run);
+            }
+
+            prevLineY = y;
+            prevLineH = h;
+            prevLineSize = lineSize;
+            prevLineFont = lineFont;
+        }
+
+        flushParagraph();
         return blocks;
     };
 
@@ -965,64 +1301,185 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             .filter(b => b.runs.length > 0)
             .map(b => b.runs.map(r => r.text).join(''));
 
-    const buildDocxFromPages = async (pages: { canvas: HTMLCanvasElement; text?: string[]; blocks?: DocxBlock[] }[]): Promise<Blob> => {
-        const pageSizeTwips = pageSize === 'a4'
-            ? { width: 11906, height: 16838 }
-            : { width: 12240, height: 15840 };
-
+    const buildDocxFromPages = async (pages: { canvas: HTMLCanvasElement; text?: string[]; blocks?: DocxBlock[]; columnBlocks?: DocxBlock[][]; columnCount?: number; pageGeometry?: PageGeometry }[]): Promise<Blob> => {
         const isLandscape = orientation === 'l';
-        const pageW = isLandscape ? pageSizeTwips.height : pageSizeTwips.width;
-        const pageH = isLandscape ? pageSizeTwips.width : pageSizeTwips.height;
-
-        const margin = 720; // 0.5 inch in twips
-        const contentWPx = (pageW - margin * 2) / 15;
-        const contentHPx = (pageH - margin * 2) / 15;
-
-        const children: Paragraph[] = [];
+        const children: (Paragraph | Table)[] = [];
 
         const runToDocx = (run: DocxRun): TextRun | ExternalHyperlink => {
-            const textRun = new TextRun({
+            const opts: any = {
                 text: run.text,
                 bold: run.bold,
                 italics: run.italic,
                 underline: run.underline ? {} : undefined,
-                color: run.url ? '0563C1' : undefined,
-                style: run.url ? 'Hyperlink' : undefined,
-            });
+                font: run.fontFamily || undefined,
+                size: run.fontSize ? run.fontSize * 2 : undefined, // half-points
+                color: run.url ? '0563C1' : (run.color && run.color !== '#000000' ? run.color.replace('#', '') : undefined),
+            };
+            const textRun = new TextRun(opts);
             if (run.url) {
                 return new ExternalHyperlink({ children: [textRun], link: run.url });
             }
             return textRun;
         };
 
+        const blockToParagraph = (block: DocxBlock): Paragraph => {
+            if (block.type === 'spacer') {
+                return new Paragraph({ spacing: { before: 240 }, children: [] });
+            }
+            const runs = block.runs.map(r => runToDocx(r));
+            const opts: any = {
+                children: runs.length > 0 ? runs : [new TextRun({ text: '' })],
+            };
+
+            // Spacing
+            const spacing: any = {};
+            if (block.spacing?.before) spacing.before = block.spacing.before;
+            else if (block.type === 'heading1') spacing.before = 360;
+            else if (block.type === 'heading2') spacing.before = 240;
+            else if (block.type === 'heading3') spacing.before = 200;
+            else spacing.before = 0;
+
+            if (block.spacing?.after) spacing.after = block.spacing.after;
+            else if (block.type === 'heading1') spacing.after = 200;
+            else if (block.type === 'heading2') spacing.after = 160;
+            else if (block.type === 'heading3') spacing.after = 120;
+            else spacing.after = 80;
+
+            if (block.spacing?.line) spacing.line = block.spacing.line;
+            else spacing.line = 276; // ~1.15x line spacing
+
+            opts.spacing = spacing;
+
+            // Heading level
+            if (block.type === 'heading1') opts.heading = HeadingLevel.HEADING_1;
+            else if (block.type === 'heading2') opts.heading = HeadingLevel.HEADING_2;
+            else if (block.type === 'heading3') opts.heading = HeadingLevel.HEADING_3;
+            else if (block.type === 'list') {
+                opts.bullet = { level: 0 };
+                opts.indent = { left: 420, hanging: 220 };
+            }
+
+            // Alignment
+            if (block.alignment === 'center') opts.alignment = AlignmentType.CENTER;
+            else if (block.alignment === 'right') opts.alignment = AlignmentType.RIGHT;
+            else if (block.alignment === 'justify') opts.alignment = AlignmentType.JUSTIFIED;
+
+            // Indentation
+            if (block.indent) {
+                if (!opts.indent) opts.indent = {};
+                if (block.indent.left) opts.indent.left = block.indent.left;
+                if (block.indent.right) opts.indent.right = block.indent.right;
+                if (block.indent.firstLine) opts.indent.firstLine = block.indent.firstLine;
+            }
+
+            return new Paragraph(opts);
+        };
+
+        const blockToCellParagraph = (block: DocxBlock): Paragraph => {
+            if (block.type === 'spacer') {
+                return new Paragraph({ spacing: { before: 120 }, children: [] });
+            }
+            const runs = block.runs.map(r => runToDocx(r));
+            const opts: any = {
+                spacing: { after: 80, line: 276 },
+                children: runs.length > 0 ? runs : [new TextRun({ text: '' })],
+            };
+            if (block.type === 'heading1') opts.heading = HeadingLevel.HEADING_1;
+            else if (block.type === 'heading2') opts.heading = HeadingLevel.HEADING_2;
+            else if (block.type === 'heading3') opts.heading = HeadingLevel.HEADING_3;
+            else if (block.type === 'list') {
+                opts.bullet = { level: 0 };
+                opts.indent = { left: 200, hanging: 110 };
+            }
+            if (block.alignment === 'center') opts.alignment = AlignmentType.CENTER;
+            else if (block.alignment === 'right') opts.alignment = AlignmentType.RIGHT;
+            else if (block.alignment === 'justify') opts.alignment = AlignmentType.JUSTIFIED;
+            return new Paragraph(opts);
+        };
+
         for (let i = 0; i < pages.length; i++) {
             const canvas = pages[i].canvas;
             const text = pages[i].text;
             const blocks = pages[i].blocks;
+            const columnBlocks = pages[i].columnBlocks;
+            const colCount = pages[i].columnCount ?? 1;
+            const geometry = pages[i].pageGeometry;
+
+            // Use actual PDF page dimensions if available
+            const pageWidthPts = geometry?.width || 612;  // Default US Letter
+            const pageHeightPts = geometry?.height || 792;
+            const pageWidthTwips = Math.round(pageWidthPts * 20);   // 1 point = 20 twips
+            const pageHeightTwips = Math.round(pageHeightPts * 20);
+            const marginTop = geometry ? Math.round(geometry.marginTop * 20) : 720;
+            const marginBottom = geometry ? Math.round(geometry.marginBottom * 20) : 720;
+            const marginLeft = geometry ? Math.round(geometry.marginLeft * 20) : 720;
+            const marginRight = geometry ? Math.round(geometry.marginRight * 20) : 720;
+
+            // Section properties for this page
+            const sectionProps: any = {
+                page: {
+                    size: {
+                        width: pageWidthTwips,
+                        height: pageHeightTwips,
+                        orientation: isLandscape ? 'landscape' : 'portrait',
+                    },
+                    margin: { top: marginTop, right: marginRight, bottom: marginBottom, left: marginLeft },
+                },
+            };
 
             if (i > 0) {
                 children.push(new Paragraph({ children: [new PageBreak()] }));
             }
 
+            if (colCount > 1 && columnBlocks && columnBlocks.length >= 2) {
+                const validCols = columnBlocks.filter(col => col.length > 0);
+                if (validCols.length >= 2) {
+                    // Render full-width blocks from allBlocks as regular paragraphs first
+                    const allFullWidthBlocks = (blocks || []).filter(b => b.fullWidth);
+                    const seenFullText = new Set<string>();
+                    for (const block of allFullWidthBlocks) {
+                        const key = block.runs.map(r => r.text).join('|');
+                        if (seenFullText.has(key)) continue;
+                        seenFullText.add(key);
+                        children.push(blockToParagraph(block));
+                    }
+
+                    // Render column-only blocks (already separated, no fullWidth blocks in columnBlocks)
+                    const noBorder = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
+                    const totalBlocks = validCols.reduce((sum, col) => sum + col.length, 0);
+                    if (totalBlocks > 0) {
+                        const table = new Table({
+                            rows: [
+                                new TableRow({
+                                    children: validCols.map(colBlocks => {
+                                        const proportion = totalBlocks > 0 ? Math.round((colBlocks.length / totalBlocks) * 100) : Math.floor(100 / validCols.length);
+                                        const colWidth = Math.max(proportion, Math.floor(100 / validCols.length));
+                                        const cellParagraphs = colBlocks.map(block => blockToCellParagraph(block));
+                                        return new TableCell({
+                                            width: { size: colWidth, type: WidthType.PERCENTAGE },
+                                            verticalAlign: VerticalAlign.TOP,
+                                            borders: {
+                                                top: noBorder,
+                                                bottom: noBorder,
+                                                left: noBorder,
+                                                right: noBorder,
+                                            },
+                                            children: cellParagraphs,
+                                        });
+                                    }),
+                                }),
+                            ],
+                            width: { size: 100, type: WidthType.PERCENTAGE },
+                        });
+                        children.push(table);
+                    }
+                    continue;
+                }
+            }
+
             if (blocks && blocks.length > 0) {
                 for (const block of blocks) {
-                    if (block.type === 'spacer') {
-                        children.push(new Paragraph({ spacing: { before: 240 }, children: [] }));
-                        continue;
-                    }
-                    const runs = block.runs.map(runToDocx);
-                    const opts: any = {
-                        spacing: { after: 200, line: 300 },
-                        children: runs.length > 0 ? runs : [new TextRun({ text: '' })],
-                    };
-                    if (block.type === 'heading1') opts.heading = HeadingLevel.HEADING_1;
-                    else if (block.type === 'heading2') opts.heading = HeadingLevel.HEADING_2;
-                    else if (block.type === 'heading3') opts.heading = HeadingLevel.HEADING_3;
-                    else if (block.type === 'list') {
-                        opts.bullet = { level: 0 };
-                        opts.indent = { left: 420, hanging: 220 };
-                    }
-                    children.push(new Paragraph(opts));
+                    children.push(blockToParagraph(block));
                 }
                 continue;
             }
@@ -1030,13 +1487,16 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             if (text && text.length > 0) {
                 for (const paraText of text) {
                     children.push(new Paragraph({
-                        spacing: { after: 240 },
+                        spacing: { after: 160, line: 276 },
                         children: [new TextRun({ text: paraText })],
                     }));
                 }
                 continue;
             }
 
+            // Fallback: embed the canvas as an image (for scanned pages or pages without extractable text)
+            const contentWPx = (pageWidthTwips - marginLeft - marginRight) / 15;
+            const contentHPx = (pageHeightTwips - marginTop - marginBottom) / 15;
             const scale = Math.min(contentWPx / canvas.width, contentHPx / canvas.height);
             const drawW = Math.max(1, Math.round(canvas.width * scale));
             const drawH = Math.max(1, Math.round(canvas.height * scale));
@@ -1060,16 +1520,26 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             children.push(paragraph);
         }
 
+        // Use first page's geometry for the document section, or default to US Letter
+        const firstGeo = pages[0]?.pageGeometry;
+        const docPageWidth = firstGeo ? Math.round(firstGeo.width * 20) : (isLandscape ? 15840 : 12240);
+        const docPageHeight = firstGeo ? Math.round(firstGeo.height * 20) : (isLandscape ? 12240 : 15840);
+
         const doc = new Document({
             sections: [{
                 properties: {
                     page: {
                         size: {
-                            width: pageW,
-                            height: pageH,
+                            width: docPageWidth,
+                            height: docPageHeight,
                             orientation: isLandscape ? 'landscape' : 'portrait',
                         },
-                        margin: { top: margin, right: margin, bottom: margin, left: margin },
+                        margin: {
+                            top: firstGeo ? Math.round(firstGeo.marginTop * 20) : 720,
+                            right: firstGeo ? Math.round(firstGeo.marginRight * 20) : 720,
+                            bottom: firstGeo ? Math.round(firstGeo.marginBottom * 20) : 720,
+                            left: firstGeo ? Math.round(firstGeo.marginLeft * 20) : 720,
+                        },
                     },
                 },
                 children,
@@ -1083,6 +1553,65 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         if (files.length === 0) return;
         setIsConverting(true);
         setStatusMessage(t.status.initializing);
+
+        // Check if all files are PDFs targeting DOCX — route through backend LibreOffice
+        const pdfToDocxFiles = files.filter(f => {
+            const isPdf = f.file.type === 'application/pdf' || f.file.name.toLowerCase().endsWith('.pdf');
+            const target = mergeFiles ? globalOutputFormat : f.outputFormat;
+            return isPdf && target === 'docx';
+        });
+
+        if (pdfToDocxFiles.length > 0) {
+            // If ALL files are PDF→DOCX, try backend LibreOffice first, fall back to client-side
+            if (pdfToDocxFiles.length === files.length) {
+                let backendSucceeded = false;
+                try {
+                    const backendFiles: DownloadableFile[] = [];
+                    for (let idx = 0; idx < files.length; idx += 1) {
+                        const appFile = files[idx];
+                        const converted = await runOfficeConversionViaBackend(appFile, 'docx', idx, files.length);
+                        backendFiles.push(...converted);
+                        onConversionComplete('success');
+                        onAddToHistory({
+                            name: `${appFile.file.name} -> .docx`,
+                            status: 'Success',
+                            url: converted[0]?.url,
+                        });
+                    }
+
+                    const finalFiles = backendFiles;
+                    if (finalFiles.length === 1) {
+                        setFinalFileName(finalFiles[0].name);
+                    }
+
+                    setDownloadableFiles(finalFiles);
+                    setStatusMessage(t.status.complete);
+                    setProgress({ current: files.length, total: files.length, percentage: 100 });
+                    setIsConverting(false);
+                    backendSucceeded = true;
+
+                    if (autoDelete && finalFiles.length > 0) {
+                        setFiles([]);
+                    }
+                    return;
+                } catch (error) {
+                    // Backend LibreOffice doesn't have DOCX export filter — fall through to client-side
+                    console.warn('Backend PDF→DOCX failed, falling back to client-side conversion:', error);
+                }
+
+                if (!backendSucceeded) {
+                    // Fall through to client-side DOCX generation below
+                    setStatusMessage(`${t.status.processing} (client-side)`);
+                }
+            }
+            // Mixed batch: warn user to separate file types
+            if (pdfToDocxFiles.length > 0 && pdfToDocxFiles.length < files.length) {
+                addToast('For best results, process PDF-to-DOCX conversions separately from other file types.', 'error');
+                setStatusMessage(t.status.error);
+                setIsConverting(false);
+                return;
+            }
+        }
 
         const officeFiles = files.filter(f => isOfficeDocument(f.file));
         if (officeFiles.length > 0) {
@@ -1117,10 +1646,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                     });
                 }
 
-                const finalOfficeFiles =
-                    mergeFiles && backendFiles.length > 1
-                        ? [await zipDownloadables(backendFiles, `${files[0].file.name.split('.')[0] || 'converted_files'}_bundle`)]
-                        : backendFiles;
+                const finalOfficeFiles = backendFiles;
 
                 if (finalOfficeFiles.length === 1) {
                     setFinalFileName(finalOfficeFiles[0].name);
@@ -1234,7 +1760,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
 
             } else if (globalOutputFormat === 'docx') {
                 setStatusMessage(t.status.generating);
-                const docxPages: { canvas: HTMLCanvasElement; text?: string[]; blocks?: DocxBlock[] }[] = [];
+                const docxPages: { canvas: HTMLCanvasElement; text?: string[]; blocks?: DocxBlock[]; columnBlocks?: DocxBlock[][]; columnCount?: number; pageGeometry?: PageGeometry }[] = [];
                 let pageCounter = 0;
 
                 for (const appFile of files) {
@@ -1248,6 +1774,9 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                             canvas: getProcessedCanvas(page.originalCanvas, page.rotation, colorMode),
                             text: page.text,
                             blocks: page.docxBlocks,
+                            columnBlocks: page.docxColumnBlocks,
+                            columnCount: page.columnCount,
+                            pageGeometry: page.pageGeometry,
                         });
                     }
                 }
@@ -1261,9 +1790,8 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 onAddToHistory({ name: `${docxName}.docx`, status: 'Success', url: docxUrl });
                 setFinalFileName(docxName);
 
-            } else { // Merging to ZIP for image formats
-                setStatusMessage(t.status.creatingZip);
-                const zip = new JSZip();
+            } else { // Producing individual images in the user's selected format
+                setStatusMessage(t.status.processing);
                 let pageCounter = 0;
 
                 for (const appFile of files) {
@@ -1279,18 +1807,18 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
 
                         if (blob) {
                             const originalFileName = appFile.file.name.split('.').slice(0, -1).join('.');
-                            const filename = `${originalFileName}_page_${i + 1}.${globalOutputFormat}`;
-                            zip.file(filename, blob);
+                            const filename = `${originalFileName}_page_${i + 1}`;
+                            const url = URL.createObjectURL(blob);
+                            generatedFiles.push({ name: filename, url, format: globalOutputFormat });
                         }
                     }
                 }
-                
-                const zipBlob = await zip.generateAsync({ type: 'blob' });
-                const zipName = files[0].file.name.split('.')[0] || 'converted_files';
-                const url = URL.createObjectURL(zipBlob);
-                generatedFiles.push({ name: zipName, url, format: 'zip' });
+
+                if (generatedFiles.length === 1) {
+                    setFinalFileName(generatedFiles[0].name);
+                }
                 onConversionComplete('success');
-                onAddToHistory({ name: `${zipName}.zip`, status: 'Success', url });
+                onAddToHistory({ name: `${files[0].file.name} -> .${globalOutputFormat}`, status: 'Success', url: generatedFiles[0]?.url });
             }
 
         } else {
@@ -1329,6 +1857,9 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                             canvas: getProcessedCanvas(page.originalCanvas, page.rotation, colorMode),
                             text: page.text,
                             blocks: page.docxBlocks,
+                            columnBlocks: page.docxColumnBlocks,
+                            columnCount: page.columnCount,
+                            pageGeometry: page.pageGeometry,
                         }));
                         const docxBlob = await buildDocxFromPages(docxPages);
                         const docxUrl = URL.createObjectURL(docxBlob);
@@ -1407,7 +1938,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     };
     
     const isGlassEffect = document.documentElement.classList.contains('dark');
-    const panelClasses = `relative w-full rounded-xl p-8 border border-[var(--border-color)] bg-[var(--background-card)] elevation-3`;
+    const panelClasses = `relative w-full panel-card p-8 elevation-3 ${isGlassEffect ? 'glass-surface' : ''}`;
     const managingFile = files.find(f => f.id === managingFileId);
     
     const mergeLabel = globalOutputFormat === 'pdf' 
@@ -1438,7 +1969,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             return (
                 <div className={`${panelClasses} text-center flex flex-col items-center slide-up-fade-in`}>
                     <div className="card-sheen"></div>
-                    <div className="w-16 h-16 bg-[var(--success-color)]/10 rounded-full flex items-center justify-center mb-4 ring-8 ring-[var(--success-color)]/5">
+                    <div className="w-16 h-16 success-chip rounded-full flex items-center justify-center mb-4">
                          <CheckIcon className="w-8 h-8 text-[var(--success-color)]" />
                     </div>
                     <h2 className="display-lg mb-2 text-[var(--text-primary)]">{t.success.title}</h2>
@@ -1477,7 +2008,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                     <div className="card-sheen"></div>
                     
                     {isDraggingOver && (
-                        <div className="absolute inset-0 bg-[var(--background-card)]/90 backdrop-blur-sm z-10 flex flex-col items-center justify-center rounded-2xl pointer-events-none">
+                        <div className="absolute inset-0 glass-surface z-10 flex flex-col items-center justify-center rounded-2xl pointer-events-none">
                             <UploadIcon className="w-16 h-16 text-[var(--primary-color)] mb-4 animate-bounce" />
                             <p className="text-2xl font-bold text-[var(--text-primary)]">Drop to add more files</p>
                         </div>
@@ -1538,8 +2069,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                                     pageSize={pageSize} setPageSize={setPageSize}
                                     orientation={orientation} setOrientation={setOrientation}
                                     colorMode={colorMode} setColorMode={setColorMode}
-                                    outputFormat={globalOutputFormat} setOutputFormat={setGlobalOutputFormat}
-                                    onApplyFormatToAll={handleApplyFormatToAll}
+                                    outputFormat={globalOutputFormat}
                                     securityOptions={securityOptions} setSecurityOptions={setSecurityOptions}
                                     pageNumbers={addPageNumbers}
                                     // Fix: Pass the correct state setter for page numbers.
@@ -1552,12 +2082,12 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                                     <>
                                         <button
                                             onClick={handleCombineImagesToPdf} disabled={isConverting || files.some(f => f.status === 'loading')}
-                                            className="glowing-btn pill-btn w-full sm:w-auto font-medium py-3 px-8 disabled:opacity-50 disabled:cursor-not-allowed min-w-[240px] flex items-center justify-center bg-[var(--success-color)] text-white hover:opacity-90"
+                                            className="success-btn pill-btn w-full sm:w-auto font-medium py-3 px-8 disabled:opacity-50 disabled:cursor-not-allowed min-w-[240px] flex items-center justify-center transition-all duration-300"
                                         >
                                            {isConverting ? (
                                                <span className="flex items-center gap-2"><SpinnerIcon /> Combining images...</span>
                                            ) : (
-                                               `📄 Combine ${files.length} Images to PDF`
+                                               <span className="flex items-center gap-2"><FileTextIcon className="w-4 h-4" /> Combine {files.length} Images to PDF</span>
                                            )}
                                         </button>
                                         <button onClick={handleAddMoreClick} className="secondary-btn pill-btn w-full sm:w-auto flex items-center justify-center gap-2 py-3 px-8 font-medium">
@@ -1570,11 +2100,14 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                                             onClick={handleConvert} disabled={isConverting || files.some(f => f.status === 'loading')}
                                             className="glowing-btn pill-btn w-full sm:w-auto font-medium py-3 px-8 disabled:opacity-50 disabled:cursor-not-allowed min-w-[200px] flex items-center justify-center"
                                         >
-                                           {isConverting ? (
-                                               <span className="flex items-center gap-2"><SpinnerIcon />{t.options.convertButtonLoading}</span>
-                                           ) : (
-                                               `${t.options.convertButton} ${files.length} ${files.length > 1 ? t.options.files : t.options.file}`
-                                           )}
+{isConverting ? (
+                                                <span className="flex items-center gap-2"><SpinnerIcon />{t.options.convertButtonLoading}</span>
+                                            ) : (
+                                                <span className="flex items-center gap-1">
+                                                    {t.options.convertButton} {files.length} {files.length > 1 ? t.options.files : t.options.file}
+                                                    <span className="btn-icon-wrap"><ArrowUpRightIcon className="w-4 h-4" /></span>
+                                                </span>
+                                            )}
                                         </button>
                                         <button onClick={handleAddMoreClick} className="secondary-btn pill-btn w-full sm:w-auto flex items-center justify-center gap-2 py-3 px-8 font-medium">
                                             <PlusIcon className="w-5 h-5" />{t.options.addMoreButton}
@@ -1618,11 +2151,15 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
 
     return (
         <div className="p-4 sm:p-8 w-full">
-             <header className="mb-8">
-                <div className="flex items-center gap-3">
-                    <h1 className="display-md" style={{ color: 'var(--text-primary)' }}>{t.title}</h1>
+             <header className="view-header">
+                <div className="view-eyebrow">
+                    <span className="eyebrow-dot" />
+                    Convert & merge
                 </div>
-                <p className="body-sm mt-1" style={{ color: 'var(--text-secondary)' }}>{t.subtitle}</p>
+                <div className="flex items-center gap-3">
+                    <h1 className="display-md">{t.title}</h1>
+                </div>
+                <p className="body-sm mt-1">{t.subtitle}</p>
             </header>
             <div className="w-full max-w-4xl mx-auto flex flex-col items-center justify-center">
                 {renderContent()}

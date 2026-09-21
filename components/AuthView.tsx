@@ -259,16 +259,25 @@ const AuthView: React.FC<AuthViewProps> = ({ isOpen, onClose, onAuthSuccess }) =
 
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-			<div className="w-full max-w-md rounded-xl bg-[var(--background-card)] border border-[var(--border-color)] p-6 relative animate-in-item elevation-5">
+			<div className="w-full max-w-md panel-card p-8 relative animate-in-item elevation-5 overflow-hidden">
+				<div className="absolute inset-x-0 top-0 h-1" style={{ background: 'linear-gradient(90deg, transparent, var(--brand-accent), transparent)' }} />
 				<button
 					onClick={onClose}
-					className="absolute top-4 right-4 p-2 rounded-full hover:bg-[var(--hover)] transition-colors"
+					className="absolute top-4 right-4 p-2 rounded-full hover:bg-[var(--well)] transition-colors"
 					aria-label="Close auth dialog"
 				>
 					<CloseIcon className="w-5 h-5 text-[var(--text-secondary)]" />
 				</button>
 
-				<h2 className="display-sm text-[var(--text-primary)] mb-4">Welcome</h2>
+				<div className="flex items-center gap-3 mb-5">
+					<div className="w-11 h-11 rounded-2xl well flex items-center justify-center">
+						<span className="caption-mono" style={{ color: 'var(--brand-accent)', fontWeight: 600 }}>DF</span>
+					</div>
+					<div>
+						<h2 className="display-sm text-[var(--text-primary)]">Welcome</h2>
+						<p className="caption-text" style={{ color: 'var(--text-tertiary)' }}>Sign in to sync files across sessions</p>
+					</div>
+				</div>
 
 				<div className="segmented-control mb-5">
 					<button

@@ -16,7 +16,7 @@ import { ToastProvider } from './components/ToastProvider';
 import { signOut } from 'firebase/auth';
 import { firebaseAuth } from './firebase';
 import { translations } from './translations';
-import { HistoryEntry, ConversionSettings, UserProfile } from './types';
+import { HistoryEntry, ConversionSettings, UserProfile, FontFamily } from './types';
 import { authFetch } from './services/authFetch';
 
 export type Page = 'dashboard' | 'upload' | 'compress' | 'torrent' | 'extract' | 'history' | 'settings' | 'profile';
@@ -72,7 +72,7 @@ const App: React.FC = () => {
             autoDelete: false,
             backgroundAnimation: true,
             fontSize: 'md',
-            fontFamily: 'Inter',
+            fontFamily: 'Space Grotesk',
         };
     });
 
@@ -82,17 +82,6 @@ const App: React.FC = () => {
         return { ...parsed, recent: parsed.recent || [] };
     });
 
-    const [history, setHistory] = useState<HistoryEntry[]>(() => {
-        const saved = localStorage.getItem('conversionHistory');
-        return saved ? JSON.parse(saved) : [];
-    });
-    
-    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
-        return localStorage.getItem('sidebarCollapsed') === 'true';
-    });
-
-    const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-    const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
         try {
             return localStorage.getItem('authSession') === 'true';
@@ -100,6 +89,53 @@ const App: React.FC = () => {
             return false;
         }
     });
+
+    const [history, setHistory] = useState<HistoryEntry[]>([]);
+
+    // Fetch history from backend API when authenticated
+    useEffect(() => {
+        if (!isAuthenticated) {
+            // Clear history when logged out
+            setHistory([]);
+            return;
+        }
+
+        let cancelled = false;
+        const fetchHistory = async () => {
+            try {
+                const response = await authFetch('/v1/jobs?limit=50');
+                if (!response.ok) return;
+                const data = await response.json();
+                if (cancelled || !data?.success || !data?.data) return;
+
+                // Transform backend Job format to frontend HistoryEntry
+                const entries: HistoryEntry[] = data.data.map((job: any) => ({
+                    id: parseInt(job.id.replace(/-/g, '').slice(0, 8), 16) || Date.now(),
+                    name: job.input_filename || 'Unknown file',
+                    date: job.completed_at || job.queued_at || new Date().toISOString(),
+                    status: job.status === 'completed' ? 'Success' as const : 'Failed' as const,
+                    url: job.status === 'completed' && job.download_token
+                        ? `/v1/files/download?token=${job.download_token}`
+                        : undefined,
+                    type: job.job_type === 'compression' ? 'Compress' as const : 'Convert' as const,
+                }));
+
+                setHistory(entries);
+            } catch (error) {
+                console.error('Failed to fetch history:', error);
+            }
+        };
+
+        fetchHistory();
+        return () => { cancelled = true; };
+    }, [isAuthenticated]);
+    
+    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+        return localStorage.getItem('sidebarCollapsed') === 'true';
+    });
+
+    const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+    const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
     const t = translations[settings.language];
 
@@ -164,8 +200,10 @@ const App: React.FC = () => {
     useEffect(() => {
         const root = window.document.documentElement;
         const sizeMap = { sm: '14px', md: '16px', lg: '18px' };
+        const allowedFonts: FontFamily[] = ['Space Grotesk', 'Inter', 'Lato', 'Roboto', 'Merriweather'];
+        const fam = allowedFonts.includes(settings.fontFamily) ? settings.fontFamily : 'Space Grotesk';
         root.style.setProperty('--font-size-base', sizeMap[settings.fontSize]);
-        root.style.setProperty('--font-family-sans', `'${settings.fontFamily}', sans-serif`);
+        root.style.setProperty('--font-family-sans', `'${fam}', 'Inter', sans-serif`);
     }, [settings.fontSize, settings.fontFamily]);
     
     useEffect(() => {
@@ -176,9 +214,7 @@ const App: React.FC = () => {
         localStorage.setItem('conversionStats', JSON.stringify(stats));
     }, [stats]);
 
-    useEffect(() => {
-        localStorage.setItem('conversionHistory', JSON.stringify(history));
-    }, [history]);
+    // History is now fetched from backend API - no localStorage persistence needed
 
     useEffect(() => {
         localStorage.setItem('userProfile', JSON.stringify(userProfile));
@@ -325,7 +361,7 @@ const App: React.FC = () => {
 
     return (
         <ToastProvider>
-            <div className={`min-h-screen w-full font-sans transition-colors duration-300 bg-[var(--background-main)]`}>
+            <div className={`min-h-screen w-full font-sans transition-colors duration-300 bg-transparent`}>
                 <AnimatedBackground enabled={isGlassEffect} />
                 
                 <div className="md:flex min-h-screen">
@@ -363,6 +399,7 @@ const App: React.FC = () => {
                                     <CompressorView 
                                         initialFiles={initialCompressFiles}
                                         t={t.compressor}
+                                        isAuthenticated={isAuthenticated}
                                     />
                                 </div>
                                 <div className="page-fade-in" style={{ display: activePage === 'upload' ? 'block' : 'none' }}>
@@ -373,6 +410,8 @@ const App: React.FC = () => {
                                         defaultCompression={settings.defaultCompression} 
                                         autoDelete={settings.autoDelete}
                                         t={t.converter}
+                                        isAuthenticated={isAuthenticated}
+                                        onAuthClick={() => setIsAuthModalOpen(true)}
                                     />
                                 </div>
                                 <div className="page-fade-in" style={{ display: activePage === 'torrent' ? 'block' : 'none' }}>
@@ -396,11 +435,21 @@ const App: React.FC = () => {
                                     <SettingsView settings={settings} onSave={handleSaveSettings} t={t.settings}/>
                                 </div>
                                 <div className="page-fade-in" style={{ display: activePage === 'profile' ? 'block' : 'none' }}>
-                                    <ProfileView userProfile={userProfile} onSave={handleSaveProfile} onLogout={handleLogout} t={t.profile}/>
+                                    <ProfileView userProfile={userProfile} onSave={handleSaveProfile} onLogout={handleLogout} onAuthClick={() => setIsAuthModalOpen(true)} isAuthenticated={isAuthenticated} t={t.profile}/>
                                 </div>
                             </div>
                         </main>
-                        <footer className="mt-8 p-4 sm:p-8 border-t border-[var(--border-color)]">
+                        <footer className="mt-10 p-4 sm:p-6 border-t border-[var(--border-color)]">
+                            <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+                                <div className="flex items-center gap-3">
+                                    <span className="meta-chip">v2.0</span>
+                                    <p className="caption-text" style={{ color: 'var(--text-tertiary)' }}>Files are processed in-browser. Nothing leaves your device unless you choose to.</p>
+                                </div>
+                                <div className="flex items-center gap-5">
+                                    <a href="#" className="caption-text no-hover-effect" style={{ color: 'var(--text-tertiary)' }} onClick={(e) => e.preventDefault()}>Privacy</a>
+                                    <a href="#" className="caption-text no-hover-effect" style={{ color: 'var(--text-tertiary)' }} onClick={(e) => e.preventDefault()}>Terms</a>
+                                </div>
+                            </div>
                         </footer>
                     </div>
                 </div>

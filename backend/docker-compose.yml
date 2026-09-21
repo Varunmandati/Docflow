@@ -23,7 +23,7 @@ services:
     image: redis:7-alpine
     container_name: docflow-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -48,7 +48,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "8090:8090"
     volumes:
       - ./storage:/app/storage
     networks:

@@ -12,12 +12,12 @@ interface ProfileViewProps {
     userProfile: UserProfile;
     onSave: (newProfile: UserProfile) => void;
     onLogout?: () => void;
+    onAuthClick?: () => void;
+    isAuthenticated?: boolean;
 }
 
 // Sub-component moved outside to prevent re-creation on every render
-const InputField: React.FC<{ label: string; value: string; onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void; type?: string; disabled?: boolean; isGlassEffect: boolean }> = ({ label, value, onChange, type = 'text', disabled = false, isGlassEffect }) => {
-    const inputBgClass = 'bg-[var(--background-card)]';
-
+const InputField: React.FC<{ label: string; value: string; onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void; type?: string; disabled?: boolean }> = ({ label, value, onChange, type = 'text', disabled = false }) => {
     return (
         <div>
             <label className="block caption-text font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>{label}</label>
@@ -32,8 +32,7 @@ const InputField: React.FC<{ label: string; value: string; onChange?: (e: React.
     );
 };
 
-const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLogout }) => {
-    const isGlassEffect = document.documentElement.classList.contains('dark');
+const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLogout, onAuthClick, isAuthenticated }) => {
     const { addToast } = useToast();
     
     const [name, setName] = useState(userProfile.name);
@@ -151,6 +150,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                 setEmailStep('input');
                 setNewEmail('');
                 setEmailOtp('');
+                onSave({ ...userProfile, email: newEmail });
                 addToast('Email changed successfully', 'success');
             } else {
                 console.error('Verify OTP failed. Backend returned:', data);
@@ -198,14 +198,14 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
 
     return (
         <div className="p-4 sm:p-8 w-full">
-            <header className="mb-8">
+            <header className="view-header">
                 <div className="flex items-center gap-3">
-                    <h1 className="display-md" style={{ color: 'var(--text-primary)' }}>{t.title}</h1>
+                    <h1 className="display-md">{t.title}</h1>
                 </div>
-                <p className="body-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Manage your personal profile and storage</p>
+                <p className="body-sm mt-1">Manage your personal profile and storage</p>
             </header>
 
-            <div className="relative max-w-4xl mx-auto rounded-xl border border-[var(--border-color)] p-8 bg-[var(--background-card)] elevation-4">
+            <div className="relative max-w-4xl mx-auto panel-card p-8 elevation-4">
                 <div className="card-sheen"></div>
                 <div className="flex flex-col md:flex-row items-center gap-8 md:gap-12">
                     {/* Avatar */}
@@ -233,7 +233,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
 
                     {/* Form */}
                     <div className="w-full space-y-4">
-                        <InputField label={t.form.name} value={name} onChange={(e) => setName(e.target.value)} isGlassEffect={isGlassEffect} />
+                        <InputField label={t.form.name} value={name} onChange={(e) => setName(e.target.value)} />
                         
                         {/* Email section with change button */}
                         <div>
@@ -259,13 +259,20 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                         </div>
 
                         <div className="grid grid-cols-1 gap-4">
-                            <InputField label={t.form.storage} value={formatBytes(userProfile.downloadedBytes)} disabled isGlassEffect={isGlassEffect} />
+                            <InputField label={t.form.storage} value={formatBytes(userProfile.downloadedBytes)} disabled />
                         </div>
                     </div>
                 </div>
                 
                 <div className="flex justify-end items-center gap-3 mt-8 border-t border-[var(--border-color)] pt-6">
-                    {onLogout && (
+                    {!isAuthenticated && onAuthClick ? (
+                        <button
+                            onClick={onAuthClick}
+                            className="glowing-btn pill-btn font-medium py-2.5 px-8 text-sm flex items-center gap-2"
+                        >
+                            Sign In
+                        </button>
+                    ) : (onLogout && (
                         <button
                             onClick={onLogout}
                             className="outline-btn pill-btn font-medium py-2.5 px-8 text-sm flex items-center gap-2"
@@ -274,14 +281,10 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                             <LogoutIcon className="w-4 h-4" />
                             Logout
                         </button>
-                    )}
+                    ))}
                     <button 
                         onClick={handleSave} 
-                        className={`glowing-btn pill-btn font-medium py-2.5 px-8 text-sm ${
-                            saveStatus === 'success' 
-                            ? 'bg-[var(--success-color)]' 
-                            : ''
-                        }`}
+                        className={`${saveStatus === 'success' ? 'success-btn' : 'glowing-btn'} pill-btn font-medium py-2.5 px-8 text-sm transition-all duration-300`}
                         disabled={saveStatus === 'success' || emailLoading}
                     >
                         {saveStatus === 'success' ? (
@@ -299,7 +302,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
             {/* Email Change Modal */}
             {showEmailChangeModal && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="rounded-xl border border-[var(--border-color)] p-6 max-w-md w-full bg-[var(--background-card)] elevation-5">
+                    <div className="panel-card p-6 max-w-md w-full elevation-5">
                         <h3 className="display-sm text-[var(--text-primary)] mb-4">Change Email</h3>
                         
                         {emailStep === 'input' ? (
@@ -314,14 +317,14 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                                 <div className="flex gap-2">
                                     <button
                                         onClick={() => setShowEmailChangeModal(false)}
-                                        className="flex-1 px-4 py-2 rounded-lg bg-[var(--text-secondary)]/20 text-[var(--text-secondary)] font-semibold hover:bg-[var(--text-secondary)]/30 transition-colors"
+                                        className="flex-1 outline-btn py-2 px-4"
                                         disabled={emailLoading}
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         onClick={handleRequestEmailOtp}
-                                        className="flex-1 px-4 py-2 rounded-lg bg-[var(--primary-color)] text-white font-semibold hover:opacity-80 transition-opacity disabled:opacity-50"
+                                        className="flex-1 primary-btn py-2 px-4"
                                         disabled={emailLoading || !newEmail}
                                     >
                                         {emailLoading ? 'Sending...' : 'Send OTP'}
@@ -337,19 +340,19 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                                     onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
                                     placeholder="000000"
                                     maxLength={6}
-                                    className="w-full border border-[var(--border-color)] text-[var(--text-primary)] rounded-lg px-3 py-2 mb-4 text-center text-2xl font-mono focus:ring-2 focus:ring-[var(--primary-color)]"
+                                    className="w-full vercel-input mb-4 text-center text-2xl font-mono tracking-widest"
                                 />
                                 <div className="flex gap-2">
                                     <button
                                         onClick={() => setEmailStep('input')}
-                                        className="flex-1 px-4 py-2 rounded-lg bg-[var(--text-secondary)]/20 text-[var(--text-secondary)] font-semibold hover:bg-[var(--text-secondary)]/30 transition-colors"
+                                        className="flex-1 outline-btn py-2 px-4"
                                         disabled={emailLoading}
                                     >
                                         Back
                                     </button>
                                     <button
                                         onClick={handleVerifyEmailOtp}
-                                        className="flex-1 px-4 py-2 rounded-lg bg-[var(--primary-color)] text-white font-semibold hover:opacity-80 transition-opacity disabled:opacity-50"
+                                        className="flex-1 primary-btn py-2 px-4"
                                         disabled={emailLoading || emailOtp.length < 4}
                                     >
                                         {emailLoading ? 'Verifying...' : 'Verify'}
@@ -364,7 +367,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
             {/* Picture Resizer Modal */}
             {showPictureResizer && imageSrc && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="rounded-xl border border-[var(--border-color)] p-6 max-w-md w-full bg-[var(--background-card)] elevation-5">
+                    <div className="panel-card p-6 max-w-md w-full elevation-5">
                         <h3 className="display-sm text-[var(--text-primary)] mb-4">Resize Picture</h3>
                         
                         <div className="relative w-full h-64 mb-6 bg-black/10 rounded-xl overflow-hidden">
@@ -400,13 +403,13 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                                     setPictureFile(null);
                                     setImageSrc(null);
                                 }}
-                                className="flex-1 px-4 py-2 rounded-lg bg-[var(--text-secondary)]/20 text-[var(--text-secondary)] font-semibold hover:bg-[var(--text-secondary)]/30 transition-colors"
+                                className="flex-1 outline-btn py-2 px-4"
                             >
                                 Cancel
                             </button>
                             <button
                                 onClick={handleResizeAndCrop}
-                                className="flex-1 px-4 py-2 rounded-lg bg-[var(--primary-color)] text-white font-semibold hover:opacity-80 transition-opacity"
+                                className="flex-1 primary-btn py-2 px-4"
                             >
                                 Apply & Crop
                             </button>

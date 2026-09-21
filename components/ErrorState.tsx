@@ -43,7 +43,7 @@ export const ErrorState: React.FC<ErrorStateProps> = ({
               {actionLabel && onAction && (
                 <button
                   onClick={onAction}
-                  className="text-sm font-medium px-3 py-1.5 rounded bg-black/10 dark:bg-white/10 hover:bg-black/20 dark:hover:bg-white/20 transition-colors"
+                  className="text-sm font-medium px-3 py-1.5 rounded bg-[var(--well)] hover:bg-[var(--well-hover)] transition-colors"
                 >
                   {actionLabel}
                 </button>

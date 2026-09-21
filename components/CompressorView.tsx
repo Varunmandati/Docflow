@@ -4,8 +4,7 @@ import { CompressFile } from '../types';
 import FileDropzone from './FileDropzone';
 import ProgressBar from './ProgressBar';
 import { CompressorTranslation } from '../translations';
-import { CheckIcon, CloseIcon, CompressIcon, DownloadIcon, FileIcon, FolderZipIcon, PlusIcon, SpinnerIcon, TrashIcon, UploadIcon } from './Icons';
-import { TrustBadges, TrustMessage } from './TrustBadges';
+import { ArrowRightIcon, CheckIcon, CloseIcon, CompressIcon, DownloadIcon, FileIcon, FolderZipIcon, PlusIcon, SpinnerIcon, TrashIcon, UploadIcon } from './Icons';
 import { authFetch } from '../services/authFetch';
 
 declare const JSZip: any;
@@ -13,6 +12,7 @@ declare const JSZip: any;
 interface CompressorViewProps {
     initialFiles: File[];
     t: CompressorTranslation;
+    isAuthenticated?: boolean;
 }
 
 interface CompressionBreakdown {
@@ -83,7 +83,7 @@ const getFileType = (file: File): 'image' | 'pdf' | 'docx' | 'pptx' | 'other' =>
     return 'other';
 };
 
-const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
+const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuthenticated }) => {
     const [files, setFiles] = useState<CompressFile[]>([]);
     const [isCompressing, setIsCompressing] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -102,10 +102,12 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
     const [isCalculatingTarget, setIsCalculatingTarget] = useState(false);
     const [outputMode, setOutputMode] = useState<'zip' | 'individual'>('zip');
     const [mergePdfPages, setMergePdfPages] = useState<boolean>(true);
+    const [targetImageFormat, setTargetImageFormat] = useState<'original' | 'jpeg' | 'webp' | 'png'>('original');
 
     const getConversionApiBase = (): string => {
-        const raw = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').trim();
-        if (!raw) return 'http://localhost:8080';
+        const raw = (import.meta.env.VITE_API_BASE_URL || '').trim();
+        // Empty base: use relative /v1/... URLs, which the Vite dev proxy
+        // forwards to the backend (http://127.0.0.1:8090 locally).
         return raw.replace(/\/api\/?$/, '');
     };
 
@@ -144,7 +146,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         );
     };
 
-    const backendCompressSingle = async (compressFile: CompressFile, targetTotalBytesForRun: number | null): Promise<{ files: { name: string; url: string; size: number; label: string }[]; originalSize: number; analysis?: CompressionInsight }> => {
+    const backendCompressSingle = async (compressFile: CompressFile, targetTotalBytesForRun: number | null, totalEligibleOriginalSize: number): Promise<{ files: { name: string; url: string; size: number; label: string }[]; originalSize: number; analysis?: CompressionInsight }> => {
         const apiBase = getConversionApiBase();
 
         const uploadForm = new FormData();
@@ -162,15 +164,20 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         const fileId = uploadPayload.fileId as string;
         if (!fileId) throw new Error('Backend upload did not return fileId');
 
-        // Calculate target bytes for this file if in target/percentage mode
+        // Calculate this file's proportional share of the run target. The
+        // backend treats targetBytes as a per-file goal, so the total target
+        // must be split across files by original size — otherwise a small file
+        // next to a large one would be asked to reach the whole run target.
         let fileTargetBytes: number | undefined;
         if (
             (compressionMode === 'target' || compressionMode === 'percentage') &&
             targetTotalBytesForRun &&
             Number.isFinite(targetTotalBytesForRun) &&
-            targetTotalBytesForRun > 0
+            targetTotalBytesForRun > 0 &&
+            totalEligibleOriginalSize > 0 &&
+            compressFile.originalSize > 0
         ) {
-            fileTargetBytes = Math.max(1, Math.floor(targetTotalBytesForRun));
+            fileTargetBytes = Math.max(1, Math.floor(targetTotalBytesForRun * (compressFile.originalSize / totalEligibleOriginalSize)));
         }
 
         const compressResponse = await authFetch(buildApiUrl(apiBase, '/v1/compress'), {
@@ -354,6 +361,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         quality: number,
         previewUrl?: string,
         scale = 1,
+        forceMime?: string,
     ): Promise<{ blob: Blob | null; extension: string }> => {
         const lowerName = file.name.toLowerCase();
         const mime = (file.type || '').toLowerCase();
@@ -362,7 +370,10 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         let outputExtension = 'jpg';
         let outputQuality: number | undefined = Math.max(0, Math.min(1, quality / 100));
 
-        if (mime === 'image/png' || lowerName.endsWith('.png')) {
+        if (forceMime) {
+            outputMime = forceMime;
+            outputExtension = forceMime === 'image/png' ? 'png' : 'jpg';
+        } else if (mime === 'image/png' || lowerName.endsWith('.png')) {
             outputMime = 'image/png';
             outputExtension = 'png';
             outputQuality = undefined;
@@ -389,7 +400,12 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                 const safeScale = Math.max(0.1, Math.min(1, scale));
                 canvas.width = Math.max(1, Math.round(img.width * safeScale));
                 canvas.height = Math.max(1, Math.round(img.height * safeScale));
-                canvas.getContext('2d')?.drawImage(img, 0, 0);
+                const canvasContext = canvas.getContext('2d');
+                if (canvasContext && forceMime === 'image/jpeg') {
+                    canvasContext.fillStyle = '#ffffff';
+                    canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+                }
+                canvasContext?.drawImage(img, 0, 0);
 
                 canvas.toBlob(
                     (blob) => {
@@ -418,18 +434,18 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
         file: File,
         targetBytes: number,
         previewUrl?: string,
-    ): Promise<{ blob: Blob | null; extension: string; qualityUsed: number; scaleUsed: number; size: number }> => {
+    ): Promise<{ blob: Blob | null; extension: string; qualityUsed: number; scaleUsed: number; size: number; convertedToJpeg?: boolean }> => {
         const normalizedTarget = Math.max(1, Math.floor(targetBytes));
         let bestUnder: { blob: Blob | null; extension: string; qualityUsed: number; scaleUsed: number; size: number } | null = null;
         let smallestOver: { blob: Blob | null; extension: string; qualityUsed: number; scaleUsed: number; size: number } | null = null;
 
-        const evaluateAtScale = async (scale: number) => {
+        const evaluateAtScale = async (scale: number, forceJpeg: boolean) => {
             let low = 1;
             let high = 100;
 
             while (low <= high) {
                 const mid = Math.floor((low + high) / 2);
-                const out = await compressImageBlob(file, mid, previewUrl, scale);
+                const out = await compressImageBlob(file, mid, previewUrl, scale, forceJpeg ? 'image/jpeg' : undefined);
                 const size = out.blob?.size || 0;
                 const candidate = {
                     blob: out.blob,
@@ -457,17 +473,33 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             }
         };
 
+        let convertedToJpeg = false;
         let scale = 1;
         for (let i = 0; i < 8; i++) {
-            await evaluateAtScale(scale);
+            await evaluateAtScale(scale, false);
             if (bestUnder) {
                 break;
             }
-            scale = Math.max(0.35, scale * 0.9);
+            scale = Math.max(0.15, scale * 0.85);
+        }
+
+        if (!bestUnder) {
+            // Lossless formats (PNG) can't shrink below their lossless size.
+            // Fall back to a lossy JPEG re-encode so the requested target is
+            // actually reachable.
+            convertedToJpeg = true;
+            scale = 1;
+            for (let i = 0; i < 10; i++) {
+                await evaluateAtScale(scale, true);
+                if (bestUnder) {
+                    break;
+                }
+                scale = Math.max(0.1, scale * 0.8);
+            }
         }
 
         const picked = bestUnder || smallestOver || { blob: null, extension: 'jpg', qualityUsed: 1, scaleUsed: 1, size: 0 };
-        return picked;
+        return { ...picked, convertedToJpeg: convertedToJpeg && !bestUnder };
     }, [compressImageBlob]);
 
     const estimateImageSize = useCallback(async (file: File, quality: number, previewUrl: string): Promise<number> => {
@@ -643,58 +675,18 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                     detectedType: 'PDF Document'
                 });
             } else if (type === 'docx' || type === 'pptx') {
-                try {
-                    const zip = new JSZip();
-                    const loadedZip = await zip.loadAsync(file);
-                    let imageCount = 0;
-                    
-                    const imageEntries: any[] = [];
-                    loadedZip.forEach((relativePath: string, zipEntry: any) => {
-                        if (!zipEntry.dir && relativePath.match(/\.(jpeg|jpg|png)$/i) && (relativePath.startsWith('word/media/') || relativePath.startsWith('ppt/media/'))) {
-                            imageEntries.push({ relativePath, zipEntry });
-                        }
-                    });
-                    
-                    if (imageEntries.length > 0) {
-                        for (const { relativePath, zipEntry } of imageEntries) {
-                            imageCount++;
-                            const imgData = await zipEntry.async('blob');
-                            const pageFile = new File([imgData], `${file.name.replace(/\.[^/.]+$/, "")}_asset_${imageCount}.jpg`, { type: imgData.type });
-                            const previewUrl = URL.createObjectURL(imgData);
-                            
-                            newCompressFiles.push({
-                                id: `${baseId}-asset-${imageCount}`,
-                                file: pageFile,
-                                type: 'image', // Treat as image for compression
-                                quality: globalQuality,
-                                isProcessing: true,
-                                originalSize: imgData.size,
-                                previewUrl,
-                                isPdfPage: true, // Reuse this flag to indicate it's part of a document
-                                originalPdfId: baseId,
-                                originalPdfName: file.name,
-                                pageNumber: imageCount,
-                                originalFile: file,
-                                relativePath: relativePath,
-                                detectedType: 'Embedded Image'
-                            });
-                        }
-                    } else {
-                        // No images found, just add the file itself
-                        newCompressFiles.push({
-                            id: baseId,
-                            file,
-                            type,
-                            quality: globalQuality,
-                            isProcessing: false,
-                            originalSize: file.size,
-                            detectedType: 'Text Document'
-                        });
-                    }
-                } catch (error) {
-                    console.error(`Error processing ${type.toUpperCase()}:`, error);
-                    addToast(`Failed to process ${type.toUpperCase()}: ${file.name}`, 'error');
-                }
+                // Keep the entire document as a single entry so shouldUseBackendCompression()
+                // routes it to the backend's compressOffice() which handles the whole
+                // DOCX/PPTX natively (much better than extracting images client-side).
+                newCompressFiles.push({
+                    id: baseId,
+                    file,
+                    type,
+                    quality: globalQuality,
+                    isProcessing: false,
+                    originalSize: file.size,
+                    detectedType: type === 'docx' ? 'Word Document' : 'PowerPoint Presentation',
+                });
             } else {
                 newCompressFiles.push({
                     id: baseId,
@@ -800,7 +792,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                     setProgress(Math.round(((i + 1) / files.length) * 100));
 
                     if (shouldUseBackendCompression(compressFile)) {
-                        const backendOut = await backendCompressSingle(compressFile, targetTotalBytesForRun);
+                        const backendOut = await backendCompressSingle(compressFile, targetTotalBytesForRun, totalTargetEligibleOriginalSize);
                         for (const f of backendOut.files) {
                             outputs.push({ name: f.name, url: f.url, size: f.size, label: f.label });
                         }
@@ -811,14 +803,34 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                         }
                     } else {
                         // Non-backend files (plain images) are still compressed
-                        // locally and included in the same batch output.
+                        // locally and included in the same batch output. In
+                        // target/percentage mode they get their proportional
+                        // share of the run target so the batch total is honored.
                         try {
-                            const compressedImage = await compressImageBlob(compressFile.file, compressFile.quality, compressFile.previewUrl);
-                            if (compressedImage.blob) {
-                                const name = `${compressFile.file.name.replace(/\.[^/.]+$/, '')}.${compressedImage.extension}`;
-                                outputs.push({ name, url: URL.createObjectURL(compressedImage.blob), size: compressedImage.blob.size });
-                                totalOriginalSize += compressFile.originalSize;
-                                totalCompressedSize += compressedImage.blob.size;
+                            const useTargetForLocal =
+                                (compressionMode === 'target' || compressionMode === 'percentage') &&
+                                !!targetTotalBytesForRun &&
+                                targetTotalBytesForRun > 0 &&
+                                totalTargetEligibleOriginalSize > 0 &&
+                                compressFile.originalSize > 0;
+
+                            if (useTargetForLocal) {
+                                const fileTargetBytes = Math.max(1, Math.floor(targetTotalBytesForRun * (compressFile.originalSize / totalTargetEligibleOriginalSize)));
+                                const targeted = await compressImageToTarget(compressFile.file, fileTargetBytes, compressFile.previewUrl);
+                                if (targeted.blob) {
+                                    const name = `${compressFile.file.name.replace(/\.[^/.]+$/, '')}.${targeted.extension}`;
+                                    outputs.push({ name, url: URL.createObjectURL(targeted.blob), size: targeted.blob.size });
+                                    totalOriginalSize += compressFile.originalSize;
+                                    totalCompressedSize += targeted.blob.size;
+                                }
+                            } else {
+                                const compressedImage = await compressImageBlob(compressFile.file, compressFile.quality, compressFile.previewUrl);
+                                if (compressedImage.blob) {
+                                    const name = `${compressFile.file.name.replace(/\.[^/.]+$/, '')}.${compressedImage.extension}`;
+                                    outputs.push({ name, url: URL.createObjectURL(compressedImage.blob), size: compressedImage.blob.size });
+                                    totalOriginalSize += compressFile.originalSize;
+                                    totalCompressedSize += compressedImage.blob.size;
+                                }
                             }
                         } catch (imgErr) {
                             console.error('Local image compression failed in mixed batch:', imgErr);
@@ -846,7 +858,12 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                 }
             } catch (error) {
                 console.error(error);
-                addToast('Backend compression failed. Falling back to local compression.', 'error');
+                addToast(
+                    !isAuthenticated
+                        ? 'Sign in for full compression of PDF/DOCX/ZIP/RAR files. Falling back to basic compression.'
+                        : 'Backend compression failed. Falling back to local compression.',
+                    'error'
+                );
                 setStatusMessage(t.status.error);
             }
         }
@@ -1005,31 +1022,31 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
     const handleDrop = (e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); e.stopPropagation(); setIsDraggingOver(false); dragCounter.current = 0; const droppedFiles = Array.from(e.dataTransfer.files); if (droppedFiles && droppedFiles.length > 0) processAndAddFiles(droppedFiles); };
 
     const isGlassEffect = document.documentElement.classList.contains('dark');
-    const panelClasses = `relative w-full rounded-2xl p-8 border border-[var(--border-color)] ${isGlassEffect ? 'bg-[var(--background-card)]/60 backdrop-blur-xl' : 'bg-[var(--background-card)]'}`;
+    const panelClasses = `relative w-full panel-card p-8 ${isGlassEffect ? 'glass-surface' : ''}`;
 
     const renderFileItem = (item: CompressFile) => {
         const spaceSaved = item.compressedSize ? ((item.originalSize - item.compressedSize) / item.originalSize) * 100 : 0;
         
-        let heatmapColor = 'bg-black/10 dark:bg-white/10';
+        let heatmapClass = 'heat-0';
         let heatmapText = 'text-[var(--text-tertiary)]';
         
         if (spaceSaved > 0) {
             if (spaceSaved < 30) {
-                heatmapColor = 'bg-green-500/20';
-                heatmapText = 'text-green-700 dark:text-green-400';
+                heatmapClass = 'heat-1';
+                heatmapText = 'text-[var(--success-color)]';
             } else if (spaceSaved < 60) {
-                heatmapColor = 'bg-yellow-500/20';
-                heatmapText = 'text-yellow-700 dark:text-yellow-400';
+                heatmapClass = 'heat-2';
+                heatmapText = 'text-[var(--warning-color)]';
             } else {
-                heatmapColor = 'bg-red-500/20';
-                heatmapText = 'text-red-700 dark:text-red-400';
+                heatmapClass = 'heat-3';
+                heatmapText = 'text-[var(--danger-color)]';
             }
         }
 
         return (
-             <div key={item.id} className={`p-3 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-4 animate-in-item border dark:border-[var(--border-color)] transition-colors duration-300 ${spaceSaved > 0 ? heatmapColor.replace('/20', '/5') : 'bg-[var(--background-card)]'}`}>
+             <div key={item.id} className={`p-3 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-4 animate-in-item border dark:border-[var(--border-color)] transition-colors duration-300 ${spaceSaved > 0 ? heatmapClass : 'bg-[var(--background-card)]'}`}>
                 <div className="flex items-center gap-3 overflow-hidden w-full sm:w-1/3">
-                    {item.previewUrl ? <img src={item.previewUrl} alt="Preview" className="w-10 h-10 object-cover rounded-md bg-black/5 dark:bg-white/5 flex-shrink-0" /> : <div className="w-10 h-10 bg-black/5 dark:bg-white/5 rounded-md flex items-center justify-center flex-shrink-0"><FileIcon className="w-6 h-6 text-[var(--primary-color)]"/></div>}
+                    {item.previewUrl ? <img src={item.previewUrl} alt="Preview" className="w-10 h-10 object-cover rounded-md bg-[var(--well)] flex-shrink-0" /> : <div className="w-10 h-10 bg-[var(--well)] rounded-md flex items-center justify-center flex-shrink-0"><FileIcon className="w-6 h-6 text-[var(--primary-color)]"/></div>}
                     <div className="flex-1 overflow-hidden">
                         <p className="text-[var(--text-primary)] font-medium truncate" title={item.file.name}>{item.file.name}</p>
                         <div className="flex items-center gap-2">
@@ -1043,15 +1060,14 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                     </div>
                 </div>
                 <div className="flex items-center gap-3 w-full sm:w-2/3">
-                    <input type="range" min="0" max="100" value={item.quality} onChange={(e) => handleFileQualityChange(item.id, parseInt(e.target.value))} className="w-full h-2 bg-black/10 dark:bg-white/10 rounded-lg appearance-none cursor-pointer" style={{accentColor: 'var(--primary-color)'}}/>
+                    <input type="range" min="0" max="100" value={item.quality} onChange={(e) => handleFileQualityChange(item.id, parseInt(e.target.value))} className="w-full h-2 bg-[var(--well-strong)] rounded-lg appearance-none cursor-pointer" style={{accentColor: 'var(--primary-color)'}}/>
                     <div className="flex items-center gap-2 w-36 text-sm">
                         {item.isProcessing ? (
-                            <div className="w-full max-w-[80px] h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden relative">
-                                <div className="absolute inset-y-0 left-0 bg-[var(--primary-color)] w-1/2 animate-[slide_1s_ease-in-out_infinite_alternate]" style={{ animation: 'indeterminate-progress 1.5s infinite ease-in-out' }} />
-                                <style>{`@keyframes indeterminate-progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }`}</style>
+                            <div className="w-full max-w-[80px] h-1.5 bg-[var(--well-strong)] rounded-full overflow-hidden relative">
+                                <div className="absolute inset-y-0 left-0 bg-[var(--primary-color)] w-1/2 animate-indeterminate" />
                             </div>
                         ) : <span className="font-semibold text-[var(--text-primary)]">{formatBytes(item.compressedSize || item.originalSize)}</span>}
-                        <span className={`font-semibold text-xs px-1.5 py-0.5 rounded-md ${heatmapColor} ${heatmapText}`}>
+                        <span className={`font-semibold text-xs px-1.5 py-0.5 rounded-md ${heatmapClass} ${heatmapText}`}>
                             {spaceSaved > 0 ? `-${spaceSaved.toFixed(0)}%` : '...'}
                         </span>
                     </div>
@@ -1070,11 +1086,11 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
             const uniqueSuggestions = Array.from(new Set((result.analyses || []).flatMap((analysis) => analysis.suggestions))).slice(0, 5);
              return (
                 <div className={`${panelClasses} text-center flex flex-col items-center slide-up-fade-in`}>
-                    <div className="w-16 h-16 bg-[var(--success-color)]/10 rounded-full flex items-center justify-center mb-4 ring-8 ring-[var(--success-color)]/5"><CheckIcon className="w-8 h-8 text-[var(--success-color)]" /></div>
+                    <div className="w-16 h-16 success-chip rounded-full flex items-center justify-center mb-4"><CheckIcon className="w-8 h-8 text-[var(--success-color)]" /></div>
                     <h2 className="text-3xl font-bold mb-2 text-[var(--text-primary)]">{t.results.title}</h2>
                     <div className="flex items-baseline justify-center gap-4 my-4">
                         <div><p className="text-lg text-[var(--text-secondary)]">Original Size</p><p className="text-2xl font-semibold">{formatBytes(result.originalSize)}</p></div>
-                        <div className="text-2xl font-bold text-[var(--primary-color)]">→</div>
+                        <div className="text-2xl font-bold text-[var(--primary-color)]"><ArrowRightIcon className="w-8 h-8" /></div>
                         <div><p className="text-lg text-[var(--text-secondary)]">Compressed Size</p><p className="text-2xl font-semibold">{formatBytes(result.compressedSize)}</p></div>
                     </div>
                     <p className={`text-xl font-bold px-4 py-2 rounded-lg ${hasSavings ? 'text-[var(--success-color)] bg-[var(--success-color)]/10' : 'text-[var(--warning-color)] bg-[var(--warning-color)]/10'}`}>
@@ -1093,7 +1109,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                                     : 1;
 
                                 return (
-                                    <div key={`${analysis.fileName}-${index}`} className="p-4 rounded-xl border border-[var(--border-color)] bg-black/5 dark:bg-white/5">
+                                    <div key={`${analysis.fileName}-${index}`} className="p-4 rounded-xl border border-[var(--border-color)] bg-[var(--well)]">
                                         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                                             <p className="font-semibold text-[var(--text-primary)] truncate" title={analysis.fileName}>{analysis.fileName}</p>
                                             <span className="text-xs px-2 py-1 rounded-full bg-[var(--primary-color)]/20 text-[var(--primary-color)] font-semibold">{formatDetectedType(analysis.detectedType)}</span>
@@ -1132,7 +1148,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                                                             <span>{item.label}</span>
                                                             <span>{formatBytes(item.value)} ({((item.value / breakdownTotal) * 100).toFixed(0)}%)</span>
                                                         </div>
-                                                        <div className="w-full h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+                                                        <div className="w-full h-1.5 bg-[var(--well-strong)] rounded-full overflow-hidden">
                                                             <div className={`h-full ${item.bar}`} style={{ width: `${Math.max(2, (item.value / breakdownTotal) * 100)}%` }} />
                                                         </div>
                                                     </div>
@@ -1168,7 +1184,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                         <div className="mt-8 w-full max-w-md space-y-3 text-left">
                             <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-4 text-center">Download Individual Files</h3>
                             {result.files.map((f, i) => (
-                                <div key={i} className="flex items-center justify-between p-3 bg-black/5 dark:bg-white/5 rounded-lg border border-[var(--border-color)]">
+                                <div key={i} className="flex items-center justify-between p-3 bg-[var(--well)] rounded-lg border border-[var(--border-color)]">
                                     <div className="flex flex-col overflow-hidden mr-4">
                                         <div className="flex items-center gap-2">
                                             <span className="text-sm font-medium text-[var(--text-primary)] truncate">{f.name}</span>
@@ -1194,20 +1210,31 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
              return (
                 <div onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop} className={`${panelClasses} slide-up-fade-in relative transition-all duration-300 border-2 ${isDraggingOver ? 'border-dashed border-[var(--primary-color)]' : 'border-[var(--border-color)]'}`}>
                     <input type="file" ref={addFilesInputRef} multiple onChange={handleAddMoreFiles} className="hidden"/>
-                    {isDraggingOver && <div className="absolute inset-0 bg-[var(--background-card)]/90 backdrop-blur-sm z-10 flex flex-col items-center justify-center rounded-2xl pointer-events-none"><UploadIcon className="w-16 h-16 text-[var(--primary-color)] mb-4 animate-bounce" /><p className="text-2xl font-bold text-[var(--text-primary)]">{t.dropMore}</p></div>}
+                    {isDraggingOver && <div className="absolute inset-0 glass-surface z-10 flex flex-col items-center justify-center rounded-2xl pointer-events-none"><UploadIcon className="w-16 h-16 text-[var(--primary-color)] mb-4 animate-bounce" /><p className="text-2xl font-bold text-[var(--text-primary)]">{t.dropMore}</p></div>}
                     {isCompressing && <div className="mb-6 animate-in-item space-y-2"><ProgressBar progress={progress} /><p className="text-sm text-[var(--text-tertiary)] text-center h-5 truncate">{statusMessage}</p></div>}
                     <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-semibold">Files ({files.length})</h3><button onClick={handleClearFiles} className="flex items-center gap-2 text-sm text-[var(--text-tertiary)] hover:text-[var(--danger-color)] transition-colors"><TrashIcon className="w-4 h-4"/>Clear All</button></div>
                     <div className="max-h-[24rem] overflow-y-auto pr-2 space-y-3 mb-6">{files.map(renderFileItem)}</div>
                     {!isCompressing && (
                         <>
-                            <div className="bg-black/5 dark:bg-white/5 p-4 rounded-lg mb-6">
+                            <div className="bg-[var(--well)] p-4 rounded-lg mb-6">
                                 <div className="flex flex-wrap gap-2 mb-4">
-                                    <button onClick={() => { setCompressionMode('quality'); handleGlobalQualityChange(80); }} className="secondary-btn outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">✨ Optimize for Me</button>
-                                    <button onClick={() => { setCompressionMode('percentage'); setTargetPercentage(25); applyTargetCompression({ mode: 'percentage', percentage: 25 }); }} className="secondary-btn outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">🌐 Optimize for Web</button>
-                                    <button onClick={() => { setCompressionMode('target'); setTargetSizeValue(10); setTargetSizeUnit('MB'); applyTargetCompression({ mode: 'target', sizeValue: 10, sizeUnit: 'MB' }); }} className="secondary-btn outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">📧 Optimize for Email</button>
-                                    <button onClick={() => { setCompressionMode('target'); setTargetSizeValue(16); setTargetSizeUnit('MB'); applyTargetCompression({ mode: 'target', sizeValue: 16, sizeUnit: 'MB' }); }} className="secondary-btn outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">💬 Optimize for WhatsApp</button>
-                                    <button onClick={() => { setCompressionMode('quality'); handleGlobalQualityChange(95); }} className="secondary-btn outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">🖨️ Optimize for Print</button>
+                                    <button onClick={() => { setCompressionMode('quality'); handleGlobalQualityChange(80); }} className="outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">Optimize for Me</button>
+                                    <button onClick={() => { setCompressionMode('percentage'); setTargetPercentage(25); applyTargetCompression({ mode: 'percentage', percentage: 25 }); }} className="outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">Optimize for Web</button>
+                                    <button onClick={() => { setCompressionMode('target'); setTargetSizeValue(10); setTargetSizeUnit('MB'); applyTargetCompression({ mode: 'target', sizeValue: 10, sizeUnit: 'MB' }); }} className="outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">Optimize for Email</button>
+                                    <button onClick={() => { setCompressionMode('target'); setTargetSizeValue(16); setTargetSizeUnit('MB'); applyTargetCompression({ mode: 'target', sizeValue: 16, sizeUnit: 'MB' }); }} className="outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">Optimize for WhatsApp</button>
+                                    <button onClick={() => { setCompressionMode('quality'); handleGlobalQualityChange(95); }} className="outline-btn flex-1 py-2 px-3 text-sm font-medium flex items-center justify-center gap-2">Optimize for Print</button>
                                 </div>
+                                {files.some(f => f.type === 'image' && !f.isPdfPage) && (
+                                    <div className="mb-6 flex flex-col items-center gap-3">
+                                        <label className="text-sm font-medium text-[var(--text-secondary)]">Image Output Format</label>
+                                        <div className="segmented-control bg-[var(--background-card)] border border-[var(--border-color)]">
+                                            <button onClick={() => setTargetImageFormat('original')} className={targetImageFormat === 'original' ? 'active' : ''}>Original</button>
+                                            <button onClick={() => setTargetImageFormat('jpeg')} className={targetImageFormat === 'jpeg' ? 'active' : ''}>JPEG</button>
+                                            <button onClick={() => setTargetImageFormat('png')} className={targetImageFormat === 'png' ? 'active' : ''}>PNG</button>
+                                            <button onClick={() => setTargetImageFormat('webp')} className={targetImageFormat === 'webp' ? 'active' : ''}>WebP</button>
+                                        </div>
+                                    </div>
+                                )}
                                 <div className="segmented-control mb-6">
                                     <button onClick={() => setCompressionMode('quality')} className={compressionMode === 'quality' ? 'active' : ''}>Quality</button>
                                     <button onClick={() => setCompressionMode('percentage')} className={compressionMode === 'percentage' ? 'active' : ''}>Percentage</button>
@@ -1222,13 +1249,13 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                                             </div>
                                             <div className="flex items-center gap-4 max-w-md mx-auto mb-4">
                                                 <span className="text-xs font-mono text-[var(--text-tertiary)]">LOW</span>
-                                                <input type="range" min="0" max="100" value={globalQuality} onChange={e => handleGlobalQualityChange(parseInt(e.target.value))} className="w-full h-2 bg-black/10 dark:bg-white/10 rounded-lg appearance-none cursor-pointer" style={{accentColor: 'var(--primary-color)'}}/>
+                                                <input type="range" min="0" max="100" value={globalQuality} onChange={e => handleGlobalQualityChange(parseInt(e.target.value))} className="w-full h-2 bg-[var(--well-strong)] rounded-lg appearance-none cursor-pointer" style={{accentColor: 'var(--primary-color)'}}/>
                                                 <span className="text-xs font-mono text-[var(--text-tertiary)]">HIGH</span>
                                             </div>
                                             <div className="flex justify-center gap-2">
-                                                <button onClick={() => handleGlobalQualityChange(30)} className="px-3 py-1 text-xs font-medium bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 rounded text-[var(--text-primary)]">Low</button>
-                                                <button onClick={() => handleGlobalQualityChange(60)} className="px-3 py-1 text-xs font-medium bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 rounded text-[var(--text-primary)]">Medium</button>
-                                                <button onClick={() => handleGlobalQualityChange(85)} className="px-3 py-1 text-xs font-medium bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 rounded text-[var(--text-primary)]">High</button>
+                                                <button onClick={() => handleGlobalQualityChange(30)} className="px-3 py-1 text-xs font-medium bg-[var(--well)] hover:bg-[var(--well-hover)] rounded text-[var(--text-primary)] transition-colors duration-200">Low</button>
+                                                <button onClick={() => handleGlobalQualityChange(60)} className="px-3 py-1 text-xs font-medium bg-[var(--well)] hover:bg-[var(--well-hover)] rounded text-[var(--text-primary)] transition-colors duration-200">Medium</button>
+                                                <button onClick={() => handleGlobalQualityChange(85)} className="px-3 py-1 text-xs font-medium bg-[var(--well)] hover:bg-[var(--well-hover)] rounded text-[var(--text-primary)] transition-colors duration-200">High</button>
                                             </div>
                                         </div>
                                     )}
@@ -1238,7 +1265,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                                             <label className="block text-sm font-medium text-[var(--text-secondary)]">Reduce file size by</label>
                                             <div className="flex flex-wrap justify-center gap-2">
                                                 {[10, 25, 50, 75].map(pct => (
-                                                    <button key={pct} onClick={() => setTargetPercentage(pct)} className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${targetPercentage === pct ? 'bg-[var(--primary-color)] text-[var(--primary-text)]' : 'bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-[var(--text-primary)]'}`}>{pct}%</button>
+                                                    <button key={pct} onClick={() => setTargetPercentage(pct)} className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${targetPercentage === pct ? 'bg-[var(--primary-color)] text-[var(--primary-text)]' : 'bg-[var(--well)] hover:bg-[var(--well-hover)] text-[var(--text-primary)]'}`}>{pct}%</button>
                                                 ))}
                                             </div>
                                             <button onClick={() => applyTargetCompression()} disabled={isCalculatingTarget} className="glowing-btn pill-btn mt-2 px-6 py-2 text-sm font-medium disabled:opacity-50 flex items-center gap-2">
@@ -1274,7 +1301,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
                                     </div>
                                 </div>
                             
-                            <div className="bg-black/5 dark:bg-white/5 p-4 rounded-lg mb-6 flex flex-col items-center gap-3">
+                            <div className="well p-4 mb-6 flex flex-col items-center gap-3">
                                 <label className="text-sm font-medium text-[var(--text-secondary)]">Output Format</label>
                                 <div className="segmented-control">
                                     <button onClick={() => setOutputMode('zip')} className={outputMode === 'zip' ? 'active' : ''}>ZIP Archive</button>
@@ -1312,11 +1339,14 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t }) => {
 
     return (
         <div className="p-4 sm:p-8 w-full">
-            <header className="mb-8">
-                <div className="flex items-center gap-3">
-                    <h1 className="display-md" style={{ color: 'var(--text-primary)' }}>{t.title}</h1>
+            <header className="view-header">
+                <div className="flex items-center justify-between gap-4">
+                    <div>
+                        <h1 className="display-md">{t.title}</h1>
+                        <p className="body-sm mt-1">{t.subtitle}</p>
+                    </div>
+                    <span className="meta-chip hidden sm:inline-flex">Target-size aware</span>
                 </div>
-                <p className="body-sm mt-1" style={{ color: 'var(--text-secondary)' }}>{t.subtitle}</p>
             </header>
             <div className="w-full max-w-4xl mx-auto flex flex-col items-center justify-center">{renderContent()}</div>
         </div>
