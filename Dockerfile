@@ -1,85 +1,65 @@
 FROM node:20-bookworm AS base
 WORKDIR /app
 
-# --- Backend build ---
+# --- Build backend ---
 COPY backend/package*.json ./backend/
 RUN cd backend && npm ci
 COPY backend ./backend
 RUN cd backend && npm run build
 
-# --- StreamService build ---
-COPY stream-service/package*.json ./stream-service/
-RUN cd stream-service && npm ci
-COPY stream-service ./stream-service
-RUN cd stream-service && npm run build
-
-# --- Runtime ---
-# We MUST use bookworm here to install all the system dependencies
-# required for document classification, OCR, and PDF->DOCX
-FROM node:20-bookworm
+# --- Runtime stage ---
+FROM node:20-bookworm-slim
 WORKDIR /app
 
-# 1. Install all native conversion dependencies (LibreOffice, Ghostscript, FFmpeg, etc)
+# Install only essential conversion dependencies for 512MB RAM free tier
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-venv \
-    python3-pip \
-    ocrmypdf \
-    tesseract-ocr \
-    tesseract-ocr-all \
-    fonts-liberation \
-    fonts-croscore \
-    fonts-noto \
-    fonts-noto-cjk \
-    fonts-noto-cjk-extra \
-    fonts-indic \
-    fonts-hosny-amiri \
-    && rm -rf /var/lib/apt/lists/*
-
-# Setup Python venv for pdf2docx
-RUN python3 -m venv /opt/pdf2docx-venv && \
-    /opt/pdf2docx-venv/bin/pip install --no-cache-dir pdf2docx PyMuPDF docx2pdf
-ENV PDF_DOCX_PYTHON=/opt/pdf2docx-venv/bin/python3
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice \
     libreoffice-writer \
     libreoffice-calc \
     libreoffice-impress \
     poppler-utils \
     ghostscript \
     ffmpeg \
-    p7zip-full \
-    fonts-dejavu \
+    redis-server \
+    python3 \
+    python3-venv \
     fonts-liberation \
-    fonts-noto \
-    fonts-noto-cjk \
-    fonts-noto-color-emoji \
+    fonts-crosextra-carlito \
+    fonts-dejavu-core \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Copy the pre-built backend and stream-service code
+# Setup lightweight Python venv for pdf2docx
+RUN python3 -m venv /opt/pdf2docx-venv && \
+    /opt/pdf2docx-venv/bin/pip install --no-cache-dir pdf2docx
+ENV PDF_DOCX_PYTHON=/opt/pdf2docx-venv/bin/python3
+
+# Copy pre-built backend code
 COPY --from=base /app/backend ./backend
-COPY --from=base /app/stream-service ./stream-service
 
-# The frontend code and root dist aren't needed here since Vercel hosts the frontend
-# but we do need concurrently to run backend and stream-service together
+# Install production-only dependencies
 RUN cd backend && npm ci --omit=dev
-RUN cd stream-service && npm ci --omit=dev
-RUN npm install -g concurrently
 
-# Ensure storage directories exist with proper permissions for document processing
-RUN mkdir -p /app/backend/storage/uploads /app/backend/storage/jobs
+# Symlink scripts directory so cwd doesn't matter
+RUN ln -s /app/backend/scripts /app/scripts
 
-# Switch to non-root user for security
-RUN chown -R node:node /app
+# Copy start script
+COPY start.sh ./start.sh
+RUN chmod +x ./start.sh
+
+# Ensure storage directories exist with node ownership
+RUN mkdir -p /app/backend/storage/uploads /app/backend/storage/jobs /app/backend/storage/temp && \
+    chown -R node:node /app
+
+# Switch to unprivileged user
 USER node
 
-# Backend API runs on 8080 (Matches Render default expectations)
-# StreamService stays internal on 127.0.0.1:3002
+# Expose HTTP port
 EXPOSE 8080
 ENV PORT=8080
+ENV HOST=0.0.0.0
 
-# Use concurrently to run the fastify backend and stream-service in a single container.
-# Make sure inline workers are enabled with Render env variables (RUN_INLINE_WORKERS='true').
-CMD ["concurrently", "node backend/dist/index.api.js", "STREAM_PORT=3002 node stream-service/dist/server.js"]
+# Lightweight liveness healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD node -e "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+CMD ["./start.sh"]
