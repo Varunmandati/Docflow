@@ -2,7 +2,10 @@
 # Dependencies
 # ========================
 node_modules/
-package-lock.json
+# NOTE: package-lock.json is deliberately COMMITTED (root, backend/, streamtor/).
+# The Dockerfile installs with `npm ci`, which refuses to run without a
+# lockfile - cloud builds (Koyeb, Oracle VM, CI) clone the repo fresh, so
+# ignoring these files would break every out-of-the-machine build.
 
 # ========================
 # Environment & Secrets

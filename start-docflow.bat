@@ -48,10 +48,16 @@ docker info >nul 2>&1
 if not errorlevel 1 goto docker_ok
 
 echo   Docker is not running. Starting Docker Desktop...
-if exist "C:\Users\varun\AppData\Local\Programs\DockerDesktop\Docker Desktop.exe" (
-  start "" "C:\Users\varun\AppData\Local\Programs\DockerDesktop\Docker Desktop.exe"
-) else (
+if exist "%ProgramFiles%\Docker\Docker\Docker Desktop.exe" (
+  start "" "%ProgramFiles%\Docker\Docker\Docker Desktop.exe"
+) else if exist "%ProgramFiles(x86)%\Docker\Docker\Docker Desktop.exe" (
+  start "" "%ProgramFiles(x86)%\Docker\Docker\Docker Desktop.exe"
+) else if exist "%LocalAppData%\Docker\Docker Desktop.exe" (
+  start "" "%LocalAppData%\Docker\Docker Desktop.exe"
+) else if exist "C:\Program Files\Docker\Docker\Docker Desktop.exe" (
   start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+) else (
+  start "" "C:\Users\varun\AppData\Local\Programs\DockerDesktop\Docker Desktop.exe"
 )
 set WAITED=0
 :wait_docker
