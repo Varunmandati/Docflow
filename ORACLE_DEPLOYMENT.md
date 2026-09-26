@@ -71,7 +71,7 @@ SSH (`22`) is already open.
 ssh -i ~/.ssh/id_ed25519 ubuntu@<public-ip>
 
 sudo apt-get update && sudo apt-get install -y git
-git clone -b main https://github.com/Varun879/docflow.git /opt/docflow
+git clone -b main https://github.com/Varunmandati/Docflow.git /opt/docflow
 
 sudo bash /opt/docflow/deploy/oracle/setup.sh     # 1st run: Docker + .env template, then stops
 sudo nano /opt/docflow/.env                       # fill in your secrets (see below)

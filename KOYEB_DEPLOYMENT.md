@@ -26,7 +26,7 @@ A separate Vercel frontend is optional (see [Step 2](#optional-step-2-deploy-fro
 1. Go to **[app.koyeb.com](https://app.koyeb.com/)** and sign up with your **GitHub** account (no credit card required).
 2. Click **Create Service** (or **Deploy**).
 3. Under **Deployment method**, select **GitHub**.
-4. Choose your repository: `Varunmandati/Docflow` (or `Varun879/docflow`) and select the `main` branch.
+4. Choose your repository: `Varunmandati/Docflow` and select the `main` branch.
 5. In the **Build and deployment settings**:
    - **Builder**: Select **Dockerfile**.
    - **Dockerfile location**: Leave as `/Dockerfile` (Koyeb will use our hardened root Dockerfile).
