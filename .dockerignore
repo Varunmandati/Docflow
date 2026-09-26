@@ -1,5 +1,11 @@
 node_modules
 **/node_modules
+# Host builds of the nested packages must not be copied over the ones the
+# stages install themselves (they are rebuilt from package-lock.json anyway)
+backend/node_modules
+stream-service/node_modules
+# Local test artefacts, not part of a deployable image
+backend/storage
 .env
 .env.*
 !.env.example

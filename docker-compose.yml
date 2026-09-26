@@ -1,0 +1,55 @@
+# =============================================================================
+# DocFlow - single-container production deployment
+#
+#   cp .env.production.example .env   # then fill in your secrets
+#   docker compose up -d --build
+#
+# One service serves everything: the React SPA, the Fastify API (inline queue
+# workers), StreamService (WebClient) and the LibreOffice/pdf2docx conversion
+# stack. Only PORT 8080 is exposed; StreamService stays on 127.0.0.1 inside the
+# container and is reached through the API's /api/uploads proxy.
+# =============================================================================
+services:
+  docflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Vite inlines these into the browser bundle at BUILD time, so a change
+        # here requires `docker compose up -d --build` (not just a restart).
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY:-}
+        VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN:-}
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-}
+        VITE_FIREBASE_STORAGE_BUCKET: ${VITE_FIREBASE_STORAGE_BUCKET:-}
+        VITE_FIREBASE_MESSAGING_SENDER_ID: ${VITE_FIREBASE_MESSAGING_SENDER_ID:-}
+        VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID:-}
+        VITE_FIREBASE_MEASUREMENT_ID: ${VITE_FIREBASE_MEASUREMENT_ID:-}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_UPLOAD_SERVER_URL: ${VITE_UPLOAD_SERVER_URL:-}
+    image: docflow:latest
+    container_name: docflow
+    ports:
+      - "${DOCFLOW_PORT:-8080}:8080"
+    env_file:
+      - .env
+    # Belt and braces: these two are what make the container production-correct
+    # even if the .env file is trimmed down.
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+    # unless-stopped gives us 24/7 uptime across reboots without Docker's
+    # daemon-wide restart policy side effects.
+    restart: unless-stopped
+    # Gives in-flight conversions a moment to finish on `docker compose down`.
+    stop_grace_period: 30s
+    volumes:
+      # Survives rebuilds/updates so uploads and queued jobs are not lost.
+      - docflow-storage:/app/backend/storage
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  docflow-storage:

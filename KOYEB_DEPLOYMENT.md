@@ -1,16 +1,21 @@
-# DocFlow Production Deployment Guide: Koyeb (Backend) + Vercel (Frontend)
+# DocFlow Production Deployment Guide: Koyeb (all-in-one)
 
-This guide documents the step-by-step process for deploying DocFlow completely free ($0/month) using **Koyeb** (Docker Backend Web Service) and **Vercel** (React Frontend).
+This guide documents deploying DocFlow completely free ($0/month, no credit card) on **a single Koyeb service** that runs the whole product — React SPA, Fastify API, queue workers and StreamService — from the root `Dockerfile`.
+
+A separate Vercel frontend is optional (see [Step 2](#optional-step-2-deploy-frontend-to-vercel)); everything works from one URL without it.
 
 ---
 
 ## 🏛️ Architecture Overview
 
-- **Frontend**: React + Vite SPA deployed on **Vercel** (Free global CDN, automatic SSL, SPA routing).
-- **Backend API & Queue Worker**: Fastify + Node.js running inside a Docker container on **Koyeb Free Instance** (512 MB RAM, 0.1 vCPU, scales down after 1 hour idle, no credit card required).
+- **Everything in one container**: the root `Dockerfile` builds the SPA, the API and StreamService, and Fastify serves the SPA itself from `./dist`. One public port (`8080`), one public URL.
+- **Backend API & Queue Worker**: Fastify + Node.js on **Koyeb Free Instance** (512 MB RAM, 0.1 vCPU, 2 GB SSD, scales down after 1 hour idle, no credit card required).
+- **StreamService (WebClient)**: runs on `127.0.0.1:3002` inside the same container and is reachable only through the API's `/api/uploads` reverse proxy. `start.sh` mints a shared `STREAM_INTERNAL_TOKEN` at boot when none is set.
 - **Queue & Rate Limiting**: In-container Redis instance (`LOCAL_REDIS=true`, 64 MB cap, noeviction policy, no disk writes), avoiding external Redis quota limits.
 - **Database**: PostgreSQL on **Neon** (Free serverless Postgres with pooling).
 - **Email Delivery**: Resend HTTPS API (`EMAIL_TRANSPORT=resend`), bypassing cloud firewall port restrictions.
+
+> **Image size**: Koyeb allows an uncompressed image of *5 GB + instance storage*, i.e. **7 GB on the free tier**. This image is ~1.8 GB unpacked, so it fits with room to spare.
 
 ---
 
@@ -36,7 +41,7 @@ This guide documents the step-by-step process for deploying DocFlow completely f
    - **Type**: `HTTP`
    - **Path**: `/health`
    - **Port**: `8080`
-9. Under **Environment variables**, click **Add variable** (or **Bulk edit**) and paste the following keys (see [`.env.koyeb.example`](.env.koyeb.example)):
+9. Under **Environment variables**, click **Add variable** (or **Bulk edit**) and paste the following keys (see [`.env.production.example`](.env.production.example)):
 
 | Variable | Value | Notes |
 | :--- | :--- | :--- |
@@ -62,7 +67,20 @@ This guide documents the step-by-step process for deploying DocFlow completely f
 | `RESEND_API_KEY` | `re_...` | From [resend.com](https://resend.com) |
 | `EMAIL_FROM` | `DocFlow <noreply@yourdomain.com>` | Or `onboarding@resend.dev` for testing |
 | `FIREBASE_SERVICE_ACCOUNT` | `{"type":"service_account",...}` | Minified single-line JSON |
-| `CORS_ORIGIN` | `*` | Temporary wildcard for Stage 1 |
+| `CORS_ORIGIN` | `*` | Only needed if you also host a frontend elsewhere (e.g. Vercel) |
+| `VITE_FIREBASE_API_KEY` | `<Web API key>` | Public browser identifiers, read at **build** time |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `<project>.firebaseapp.com` | Firebase Auth domain |
+| `VITE_FIREBASE_PROJECT_ID` | `<project>` | Firebase project id |
+| `VITE_FIREBASE_STORAGE_BUCKET` | `<project>.appspot.com` | Firebase storage bucket |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | `<id>` | Firebase messaging sender |
+| `VITE_FIREBASE_APP_ID` | `1:...:web:...` | Firebase web app id |
+| `VITE_API_BASE_URL` | *(empty)* | Empty = same-origin relative URLs, correct for the all-in-one container |
+| `VITE_UPLOAD_SERVER_URL` | *(empty)* | Empty = the SPA calls `/api/uploads` on its own origin |
+| `STREAM_ENABLED` | `true` | Set `false` to reclaim ~100 MB if the instance runs out of memory |
+| `STREAM_PORT` | `3002` | Internal only, never exposed publicly |
+| `STREAM_INTERNAL_TOKEN` | *(leave unset)* | `start.sh` mints one at boot and shares it with the API |
+
+> `VITE_*` values are inlined into the browser bundle **during the build**. If the first build ran before you added them, hit **Redeploy** afterwards.
 
 10. Click **Deploy**.
 11. Wait for the build to complete. When active, Koyeb will give you a public URL:
@@ -73,7 +91,9 @@ This guide documents the step-by-step process for deploying DocFlow completely f
 
 ---
 
-### Step 2: Deploy Frontend to Vercel
+### Optional Step 2: Deploy Frontend to Vercel
+
+Skip this step for the default all-in-one deployment — the SPA is already served by Koyeb. Only follow it if you want a separate frontend host.
 
 1. Log into **[vercel.com](https://vercel.com/)** and click **Add New...** $\rightarrow$ **Project**.
 2. Select and import your `Docflow` repository.
@@ -90,7 +110,9 @@ This guide documents the step-by-step process for deploying DocFlow completely f
 
 ---
 
-### Step 3: Lock Down `CORS_ORIGIN` on Koyeb
+### Optional Step 3: Lock Down `CORS_ORIGIN` on Koyeb
+
+Only needed for the optional Vercel split. With the all-in-one container the SPA and API share an origin, so leave `CORS_ORIGIN=*` (or unset).
 
 1. Return to the **Koyeb Control Panel** $\rightarrow$ your Service $\rightarrow$ **Settings** $\rightarrow$ **Environment variables**.
 2. Edit `CORS_ORIGIN`:
@@ -99,18 +121,19 @@ This guide documents the step-by-step process for deploying DocFlow completely f
 
 ---
 
-### Step 4: Add Vercel Domain to Firebase Auth
+### Step 4: Add Your Domain to Firebase Auth
 
 1. Open the **[Firebase Console](https://console.firebase.google.com/)** $\rightarrow$ select your DocFlow project.
 2. Go to **Authentication** $\rightarrow$ **Settings** $\rightarrow$ **Authorized domains**.
-3. Click **Add domain** and enter your Vercel domain (e.g., `<your-app>.vercel.app`).
+3. Click **Add domain** and enter your Koyeb domain (e.g. `<your-app>-<org>.koyeb.app`), and your Vercel domain too if you deployed the optional split.
 
 ---
 
 ## 🔍 Verification Checklist
 
-- [ ] Koyeb health check responds: `GET /health` returns `200 OK`.
-- [ ] Vercel frontend loads cleanly with no console CORS errors.
+- [ ] `GET /health` returns `200 OK` with `{"status":"ok",...}`.
+- [ ] Opening the app URL serves the SPA (`/` and a deep link such as `/login` both return the HTML shell).
+- [ ] `/api/uploads` answers (a `401` without a Firebase token is correct; a `502` means StreamService did not start — check the logs for `[start] Launching StreamService`).
 - [ ] OTP login email is received via Resend.
 - [ ] Single file conversion (Word, PDF, Image) converts and downloads cleanly.
 - [ ] App stays idle for up to 1 hour before sleeping (wakes up automatically on next visit).
