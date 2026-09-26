@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { DownloadIcon, FileIcon } from './Icons';
 import { HistoryTranslation } from '../translations';
 import { HistoryEntry } from '../types';
@@ -7,16 +7,25 @@ interface HistoryViewProps {
     history: HistoryEntry[];
     t: HistoryTranslation;
     initialFilter?: 'failed' | 'success' | 'all';
+    filterNonce?: number;
 }
 
 type StatusFilter = 'all' | 'success' | 'failed';
 
 const ITEMS_PER_PAGE = 10;
 
-const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = 'all' }) => {
+const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = 'all', filterNonce = 0 }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialFilter === 'failed' ? 'failed' : initialFilter === 'success' ? 'success' : 'all');
     const [currentPage, setCurrentPage] = useState(1);
+
+    // Re-apply the parent-driven filter when navigation requests it (e.g.
+    // dashboard "Failed" card). HistoryView stays mounted for transitions, so
+    // useState alone would ignore later initialFilter changes.
+    useEffect(() => {
+        setStatusFilter(initialFilter === 'failed' ? 'failed' : initialFilter === 'success' ? 'success' : 'all');
+        setCurrentPage(1);
+    }, [initialFilter, filterNonce]);
 
     const filteredHistory = useMemo(() => {
         let result = history;

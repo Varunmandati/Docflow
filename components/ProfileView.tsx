@@ -115,8 +115,8 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                 body: JSON.stringify({ oldEmail: email, newEmail }),
             });
 
-            const data = await response.json();
-            if (data.success) {
+            const data = await response.json().catch(() => ({ success: false }));
+            if (response.ok && data.success) {
                 setEmailStep('otp');
                 addToast('OTP sent to your new email', 'success');
             } else {
@@ -143,8 +143,8 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                 body: JSON.stringify({ oldEmail: email, newEmail, otp: emailOtp }),
             });
 
-            const data = await response.json();
-            if (data.success) {
+            const data = await response.json().catch(() => ({ success: false }));
+            if (response.ok && data.success) {
                 setEmail(newEmail);
                 setShowEmailChangeModal(false);
                 setEmailStep('input');
@@ -166,6 +166,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
     const handleSave = async () => {
         try {
             // If avatar changed, upload it
+            let uploadedAvatarUrl: string | undefined;
             if (avatarPreview && avatarPreview !== userProfile.avatarUrl) {
                 const response = await authFetch('/v1/profile/upload-picture', {
                     method: 'POST',
@@ -177,13 +178,32 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                     addToast('Failed to upload picture', 'error');
                     return;
                 }
+                const uploadPayload = await response.json().catch(() => ({} as any));
+                uploadedAvatarUrl = uploadPayload?.profile?.avatarUrl || uploadPayload?.avatarUrl;
+            }
+
+            // Persist name (and avatar URL when the backend returned one) so a
+            // page reload / profile sync does not revert the edit.
+            if (isAuthenticated && (name !== userProfile.name || uploadedAvatarUrl)) {
+                const profileResponse = await authFetch('/v1/profile', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name,
+                        ...(uploadedAvatarUrl ? { avatarUrl: uploadedAvatarUrl } : {}),
+                    }),
+                });
+                if (!profileResponse.ok) {
+                    addToast('Failed to save profile', 'error');
+                    return;
+                }
             }
 
             // Update profile
             onSave({
                 name,
                 email,
-                avatarUrl: avatarPreview || userProfile.avatarUrl,
+                avatarUrl: uploadedAvatarUrl || avatarPreview || userProfile.avatarUrl,
             });
 
             setSaveStatus('success');

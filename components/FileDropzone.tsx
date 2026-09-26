@@ -27,7 +27,7 @@ const FileDropzone: React.FC<FileDropzoneProps> = ({ onFilesAdded, isQuickConver
     const [isDragging, setIsDragging] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
     
-    const defaultAccept = ".pdf,application/pdf,.tif,.tiff,image/tiff,.jpg,.jpeg,image/jpeg,.png,image/png,.bmp,image/bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.odp,.ods,.rtf,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.ms-powerpoint,application/vnd.ms-excel,text/plain";
+    const defaultAccept = ".pdf,application/pdf,.tif,.tiff,image/tiff,.jpg,.jpeg,image/jpeg,.png,image/png,.bmp,image/bmp,.webp,image/webp,.gif,image/gif,.svg,image/svg+xml,.heic,image/heic,.avif,image/avif,image/*,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.odp,.ods,.rtf,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.ms-powerpoint,application/vnd.ms-excel,text/plain";
 
     const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
@@ -61,6 +61,7 @@ const FileDropzone: React.FC<FileDropzoneProps> = ({ onFilesAdded, isQuickConver
          if (files && files.length > 0) {
             onFilesAdded(files);
         }
+        if (e.target) e.target.value = '';
     };
     
     const onButtonClick = () => {

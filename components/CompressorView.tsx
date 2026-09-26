@@ -75,16 +75,20 @@ const debounce = <F extends (...args: any[]) => any>(func: F, waitFor: number) =
         });
 };
 
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff', '.svg', '.heic', '.heif', '.avif', '.ico'];
+
 const getFileType = (file: File): 'image' | 'pdf' | 'docx' | 'pptx' | 'other' => {
-    if (file.type.startsWith('image/')) return 'image';
-    if (file.type === 'application/pdf') return 'pdf';
-    if (file.name.toLowerCase().endsWith('.docx') || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
-    if (file.name.toLowerCase().endsWith('.pptx') || file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'pptx';
+    const lower = file.name.toLowerCase();
+    if (file.type.startsWith('image/') || IMAGE_EXTS.some(ext => lower.endsWith(ext))) return 'image';
+    if (file.type === 'application/pdf' || file.type === 'application/x-pdf' || lower.endsWith('.pdf')) return 'pdf';
+    if (lower.endsWith('.docx') || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+    if (lower.endsWith('.pptx') || file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'pptx';
     return 'other';
 };
 
 const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuthenticated }) => {
     const [files, setFiles] = useState<CompressFile[]>([]);
+    const filesRef = useRef<CompressFile[]>([]);
     const [isCompressing, setIsCompressing] = useState(false);
     const [progress, setProgress] = useState(0);
     const [statusMessage, setStatusMessage] = useState('');
@@ -103,6 +107,14 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
     const [outputMode, setOutputMode] = useState<'zip' | 'individual'>('zip');
     const [mergePdfPages, setMergePdfPages] = useState<boolean>(true);
     const [targetImageFormat, setTargetImageFormat] = useState<'original' | 'jpeg' | 'webp' | 'png'>('original');
+    const lastInitialFilesRef = useRef<File[] | null>(null);
+
+    const resolveTargetImageMime = (): string | undefined => {
+        if (targetImageFormat === 'jpeg') return 'image/jpeg';
+        if (targetImageFormat === 'webp') return 'image/webp';
+        if (targetImageFormat === 'png') return 'image/png';
+        return undefined;
+    };
 
     const getConversionApiBase = (): string => {
         const raw = (import.meta.env.VITE_API_BASE_URL || '').trim();
@@ -372,7 +384,8 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
 
         if (forceMime) {
             outputMime = forceMime;
-            outputExtension = forceMime === 'image/png' ? 'png' : 'jpg';
+            outputExtension = forceMime === 'image/png' ? 'png' : forceMime === 'image/webp' ? 'webp' : 'jpg';
+            if (forceMime === 'image/png') outputQuality = undefined;
         } else if (mime === 'image/png' || lowerName.endsWith('.png')) {
             outputMime = 'image/png';
             outputExtension = 'png';
@@ -397,11 +410,14 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
 
             img.onload = () => {
                 const canvas = document.createElement('canvas');
-                const safeScale = Math.max(0.1, Math.min(1, scale));
+                const isPng = outputMime === 'image/png';
+                const pngScale = isPng ? Math.max(0.35, Math.min(1, 0.35 + 0.65 * (quality / 100))) : 1;
+                const effectiveScale = scale * pngScale;
+                const safeScale = Math.max(0.1, Math.min(1, effectiveScale));
                 canvas.width = Math.max(1, Math.round(img.width * safeScale));
                 canvas.height = Math.max(1, Math.round(img.height * safeScale));
                 const canvasContext = canvas.getContext('2d');
-                if (canvasContext && forceMime === 'image/jpeg') {
+                if (canvasContext && outputMime === 'image/jpeg') {
                     canvasContext.fillStyle = '#ffffff';
                     canvasContext.fillRect(0, 0, canvas.width, canvas.height);
                 }
@@ -428,7 +444,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
 
             img.src = objectUrl;
         });
-    }, []);
+    }, [targetImageFormat]);
 
     const compressImageToTarget = useCallback(async (
         file: File,
@@ -438,14 +454,16 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
         const normalizedTarget = Math.max(1, Math.floor(targetBytes));
         let bestUnder: { blob: Blob | null; extension: string; qualityUsed: number; scaleUsed: number; size: number } | null = null;
         let smallestOver: { blob: Blob | null; extension: string; qualityUsed: number; scaleUsed: number; size: number } | null = null;
+        const forcedMime = resolveTargetImageMime();
 
         const evaluateAtScale = async (scale: number, forceJpeg: boolean) => {
             let low = 1;
             let high = 100;
+            const mimeArg = forcedMime || (forceJpeg ? 'image/jpeg' : undefined);
 
             while (low <= high) {
                 const mid = Math.floor((low + high) / 2);
-                const out = await compressImageBlob(file, mid, previewUrl, scale, forceJpeg ? 'image/jpeg' : undefined);
+                const out = await compressImageBlob(file, mid, previewUrl, scale, mimeArg);
                 const size = out.blob?.size || 0;
                 const candidate = {
                     blob: out.blob,
@@ -500,21 +518,29 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
 
         const picked = bestUnder || smallestOver || { blob: null, extension: 'jpg', qualityUsed: 1, scaleUsed: 1, size: 0 };
         return { ...picked, convertedToJpeg: convertedToJpeg && !bestUnder };
-    }, [compressImageBlob]);
+    }, [compressImageBlob, targetImageFormat]);
 
     const estimateImageSize = useCallback(async (file: File, quality: number, previewUrl: string): Promise<number> => {
-        const { blob } = await compressImageBlob(file, quality, previewUrl);
+        const { blob } = await compressImageBlob(file, quality, previewUrl, 1, resolveTargetImageMime());
         return blob?.size || 0;
-    }, [compressImageBlob]);
+    }, [compressImageBlob, targetImageFormat]);
 
     const estimateFileSize = useCallback(async (file: CompressFile, quality: number): Promise<number> => {
-        if (file.type === 'image' && file.previewUrl) {
-            return await estimateImageSize(file.file, quality, file.previewUrl);
+        if (file.type === 'image') {
+            const previewUrl = file.previewUrl || URL.createObjectURL(file.file);
+            return await estimateImageSize(file.file, quality, previewUrl);
+        } else if (file.type === 'pdf') {
+            // Smoothly estimate PDF size reduction from quality slider (72-300 DPI + JPEG compression curve)
+            const ratio = Math.max(0.18, Math.min(1, 0.2 + 0.8 * Math.pow(quality / 100, 0.95)));
+            return Math.max(1, Math.round(file.originalSize * ratio));
         } else if (file.type === 'docx' || file.type === 'pptx') {
             const compressedBlob = await compressOfficeDocument(file.file, quality);
             return compressedBlob.size;
+        } else {
+            // Generic/other formats (e.g. zip/text)
+            const ratio = Math.max(0.35, Math.min(1, 0.35 + 0.65 * (quality / 100)));
+            return Math.max(1, Math.round(file.originalSize * ratio));
         }
-        return file.originalSize;
     }, [estimateImageSize]);
 
     const debouncedEstimate = useCallback(debounce(estimateFileSize, 300), [estimateFileSize]);
@@ -633,21 +659,21 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
                 return f;
             });
             
-            if (fileToUpdate && (fileToUpdate.type === 'image' || fileToUpdate.type === 'docx' || fileToUpdate.type === 'pptx')) {
-                debouncedEstimate(fileToUpdate, quality).then(size => {
+            if (fileToUpdate) {
+                const target = fileToUpdate;
+                debouncedEstimate(target, quality).then(size => {
                     setFiles(currentFiles =>
                         currentFiles.map(cf =>
                             cf.id === id ? { ...cf, compressedSize: size, isProcessing: false } : cf
                         )
                     );
+                }).catch(() => {
+                    setFiles(currentFiles =>
+                        currentFiles.map(cf =>
+                            cf.id === id ? { ...cf, isProcessing: false } : cf
+                        )
+                    );
                 });
-            } else if (fileToUpdate) {
-                // For other files, just turn off processing
-                setFiles(currentFiles =>
-                    currentFiles.map(cf =>
-                        cf.id === id ? { ...cf, isProcessing: false } : cf
-                    )
-                );
             }
             return newFiles;
         });
@@ -658,7 +684,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
         
         for (const file of newFiles) {
             const type = getFileType(file);
-            const baseId = `${file.name}-${file.lastModified}-${file.size}-${Math.random().toString(36).substr(2, 9)}`;
+            const baseId = `${file.name}-${file.lastModified}-${file.size}`;
             
             if (type === 'pdf') {
                 // Keep the raw PDF as a single unit so shouldUseBackendCompression()
@@ -700,50 +726,57 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
             }
         }
 
-        setFiles(prev => [...prev, ...newCompressFiles]);
+        // Dedupe against the live list (ref) so already-present files are not
+        // re-added or re-estimated — setState updaters may run after this loop.
+        const existing = new Set(filesRef.current.map(f => f.id));
+        const filesToProcess = newCompressFiles.filter(f => !existing.has(f.id));
+        if (filesToProcess.length > 0) {
+            filesRef.current = [...filesRef.current, ...filesToProcess];
+            setFiles(prev => {
+                const ids = new Set(prev.map(f => f.id));
+                return [...prev, ...filesToProcess.filter(f => !ids.has(f.id))];
+            });
+        }
 
         // Generate previews and initial estimates
-        for (const cf of newCompressFiles) {
-            if (cf.type === 'image' && !cf.isPdfPage) {
+        for (const cf of filesToProcess) {
+            setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, isProcessing: true } : f));
+            if (cf.type === 'image' && !cf.isPdfPage && !cf.previewUrl) {
                 const previewUrl = URL.createObjectURL(cf.file);
-                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, previewUrl, isProcessing: true } : f));
-                const estimatedSize = await estimateImageSize(cf.file, cf.quality, previewUrl);
+                cf.previewUrl = previewUrl;
+                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, previewUrl } : f));
+            }
+            try {
+                const estimatedSize = await estimateFileSize(cf, cf.quality);
                 setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, compressedSize: estimatedSize, isProcessing: false } : f));
-            } else if (cf.isPdfPage && cf.previewUrl) {
-                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, isProcessing: true } : f));
-                const estimatedSize = await estimateImageSize(cf.file, cf.quality, cf.previewUrl);
-                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, compressedSize: estimatedSize, isProcessing: false } : f));
-            } else if (cf.type === 'docx' || cf.type === 'pptx') {
-                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, isProcessing: true } : f));
-                const compressedBlob = await compressOfficeDocument(cf.file, cf.quality);
-                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, compressedSize: compressedBlob.size, isProcessing: false } : f));
-            } else if (cf.type === 'other') {
-                // For other files, we might not be able to compress them effectively client-side.
-                // Just set compressed size to original size for now.
-                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, compressedSize: cf.originalSize } : f));
+            } catch {
+                setFiles(prev => prev.map(f => f.id === cf.id ? { ...f, compressedSize: cf.originalSize, isProcessing: false } : f));
             }
         }
-    }, [globalQuality, estimateImageSize, addToast]);
+    }, [globalQuality, estimateFileSize, addToast]);
     
     useEffect(() => {
-        if (initialFiles.length > 0) processAndAddFiles(initialFiles);
+        // Only apply each initialFiles batch once — processAndAddFiles identity
+        // changes with globalQuality and would re-add the same files as dupes.
+        if (initialFiles.length === 0) return;
+        if (lastInitialFilesRef.current === initialFiles) return;
+        lastInitialFilesRef.current = initialFiles;
+        processAndAddFiles(initialFiles);
     }, [initialFiles, processAndAddFiles]);
+
+    useEffect(() => {
+        filesRef.current = files;
+    }, [files]);
     
     const handleGlobalQualityChange = (quality: number) => {
         setGlobalQuality(quality);
         setFiles(prev => {
-            const newFiles = prev.map(f => {
-                if (f.type === 'image' || f.type === 'docx' || f.type === 'pptx') {
-                    return { ...f, quality, isProcessing: true };
-                }
-                return f;
-            });
-            
-            const filesToUpdate = newFiles.filter(f => f.type === 'image' || f.type === 'docx' || f.type === 'pptx');
+            const newFiles = prev.map(f => ({ ...f, quality, isProcessing: true }));
 
-            const promises = filesToUpdate.map(file => 
+            const promises = newFiles.map(file => 
                 debouncedEstimate(file, quality)
                     .then(size => ({ id: file.id, size }))
+                    .catch(() => ({ id: file.id, size: file.originalSize }))
             );
 
             Promise.all(promises).then(results => {
@@ -824,7 +857,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
                                     totalCompressedSize += targeted.blob.size;
                                 }
                             } else {
-                                const compressedImage = await compressImageBlob(compressFile.file, compressFile.quality, compressFile.previewUrl);
+                                const compressedImage = await compressImageBlob(compressFile.file, compressFile.quality, compressFile.previewUrl, 1, resolveTargetImageMime());
                                 if (compressedImage.blob) {
                                     const name = `${compressFile.file.name.replace(/\.[^/.]+$/, '')}.${compressedImage.extension}`;
                                     outputs.push({ name, url: URL.createObjectURL(compressedImage.blob), size: compressedImage.blob.size });
@@ -900,7 +933,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
                         finalBlob = targeted.blob;
                         finalName = `${compressFile.file.name.replace(/\.[^/.]+$/, '')}.${targeted.extension}`;
                     } else {
-                        const compressedImage = await compressImageBlob(compressFile.file, compressFile.quality, compressFile.previewUrl);
+                        const compressedImage = await compressImageBlob(compressFile.file, compressFile.quality, compressFile.previewUrl, 1, resolveTargetImageMime());
                         finalBlob = compressedImage.blob;
                         finalName = `${compressFile.file.name.replace(/\.[^/.]+$/, '')}.${compressedImage.extension}`;
                     }
