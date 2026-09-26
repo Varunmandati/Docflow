@@ -24,9 +24,49 @@ export async function buildServer() {
         contentSecurityPolicy: {
             directives: {
                 defaultSrc: ["'self'"],
-                scriptSrc: ["'self'"],
-                styleSrc: ["'self'", "'unsafe-inline'"],
+                // This server also serves the built SPA (fastifyStatic below), so
+                // the policy has to permit exactly what index.html already
+                // references. index.html pulls Tailwind, PDF.js, JSZip, jsPDF,
+                // tiff.js and WebClient from CDNs, loads Google Fonts, carries
+                // two inline <script> blocks (Tailwind runtime config + import
+                // map), and calls Firebase Identity Toolkit for auth. With the
+                // previous 'self'-only policy those were all blocked, so the
+                // page Fastify served compiled down to a blank, unstyled shell.
+                scriptSrc: [
+                    "'self'",
+                    "'unsafe-inline'",
+                    "https://cdn.tailwindcss.com",
+                    "https://unpkg.com",
+                    "https://cdnjs.cloudflare.com",
+                    "https://cdn.jsdelivr.net",
+                    "https://aistudiocdn.com",
+                    "https://www.gstatic.com",
+                ],
+                // 'unsafe-inline' was already helmet's default for styles;
+                // fonts.googleapis.com serves Space Grotesk / JetBrains Mono.
+                styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+                fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
                 imgSrc: ["'self'", "data:", "blob:", "https:"],
+                mediaSrc: ["'self'", "blob:", "data:"],
+                workerSrc: ["'self'", "blob:", "https://cdnjs.cloudflare.com"],
+                // 'self' covers the API in same-origin (all-in-one container)
+                // deployments; the Google endpoints are Firebase Auth token
+                // exchange/refresh; the remaining entries cover a separately
+                // hosted API when CORS_ORIGIN lists its origin.
+                connectSrc: [
+                    "'self'",
+                    "https://identitytoolkit.googleapis.com",
+                    "https://securetoken.googleapis.com",
+                    "https://firebase.googleapis.com",
+                    "https://www.googleapis.com",
+                    "https://*.googleapis.com",
+                    ...(env.CORS_ORIGIN === '*'
+                        ? []
+                        : env.CORS_ORIGIN
+                            .split(',')
+                            .map((value) => value.trim())
+                            .filter((value) => value.startsWith('http'))),
+                ],
             }
         },
         hsts: {

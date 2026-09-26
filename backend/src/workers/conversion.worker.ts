@@ -32,7 +32,7 @@ const OFFICE_FORMATS = new Set(['doc', 'docx', 'odt', 'rtf', 'txt', 'html', 'md'
 // Raster sources Sharp cannot read natively (no libvips loader): these are
 // rasterized via LibreOffice -> PDF, then PDF -> images.
 const LO_RASTER_SOURCES = new Set(['bmp']);
-const HEAVY_ENGINE_NAMES = new Set(['LibreOffice', 'Ffmpeg', 'PdfToDocx', 'PdfToDocxLayout']);
+const HEAVY_ENGINE_NAMES = new Set(['LibreOffice', 'FFmpeg', 'Ffmpeg', 'PdfToDocx', 'PdfToDocxLayout']);
 
 const ENGINES: ConverterEngine[] = [
     // Conditionally load the PDF->DOCX engine based on feature flag

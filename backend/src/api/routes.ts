@@ -27,6 +27,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // Global Error Handler
     app.setErrorHandler((error, request, reply) => {
         logger.error({ err: error, method: request.method, url: request.url }, 'API error');
-        reply.code(500).send({ success: false, message: 'Internal server error.' });
+        const statusCode = (error as any)?.statusCode && Number((error as any).statusCode) >= 400
+            ? Number((error as any).statusCode)
+            : 500;
+        reply.code(statusCode).send({
+            success: false,
+            message: statusCode === 500 ? 'Internal server error.' : ((error as any)?.message || 'Request failed.'),
+        });
     });
 }

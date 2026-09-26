@@ -158,7 +158,7 @@ async function compressPdf(inputPath: string, outputPath: string, quality: numbe
         inputPath,
     ];
 
-    const result = await executeCommand('gs', args, env.CONVERSION_TIMEOUT_MS);
+    const result = await executeCommand(env.GS_BINARY || 'gs', args, env.CONVERSION_TIMEOUT_MS);
     if (result.code !== 0) {
         await fs.copyFile(inputPath, outputPath);
     }
