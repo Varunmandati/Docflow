@@ -260,7 +260,7 @@ Full walkthrough (VM shape, firewall rules, HTTPS, cost guardrails):
 
 ### Option B — Koyeb free instance
 
-[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com%2FVarun879%2Fdocflow&branch=main&name=docflow)
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com%2FVarunmandati%2FDocflow&branch=main&name=docflow)
 
 1. Click the button (Koyeb builds the repo's root `Dockerfile`).
 2. Open **Settings → Environment Variables** and paste every entry from

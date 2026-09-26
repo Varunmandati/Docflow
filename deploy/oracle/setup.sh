@@ -17,7 +17,7 @@
 # =============================================================================
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/Varun879/docflow.git}"
+REPO_URL="${REPO_URL:-https://github.com/Varunmandati/Docflow.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/docflow}"
 
