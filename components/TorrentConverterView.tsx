@@ -64,16 +64,12 @@ const formatBytes = (bytes: number, decimals = 2): string => {
 
 const formatSpeed = (bps: number): string => {
   if (!bps || bps <= 0) return '0 B/s';
-  // Convert bytes/s to bits/s for Mbps display
+  const bytesPerSec = formatBytes(bps) + '/s';
   const bitsPerSec = bps * 8;
   if (bitsPerSec >= 1000000) {
-    // Show in Mbps when >= 1 Mbps
-    return `${(bitsPerSec / 1000000).toFixed(2)} Mbps`;
-  } else if (bitsPerSec >= 1000) {
-    // Show in Kbps when >= 1 Kbps
-    return `${(bitsPerSec / 1000).toFixed(1)} Kbps`;
+    return `${bytesPerSec} (${(bitsPerSec / 1000000).toFixed(2)} Mbps)`;
   }
-  return `${bitsPerSec.toFixed(0)} bps`;
+  return bytesPerSec;
 };
 
 const isVideoFile = (name: string): boolean => {
@@ -102,7 +98,14 @@ const TorrentConverterView: React.FC = () => {
       } else {
         current.add(fileIndex);
       }
-      return { ...prev, [infoHash]: current };
+      const updated = { ...prev, [infoHash]: current };
+      // Notify backend to prioritize selected file pieces
+      fetch(`${TORRENT_SERVER_URL}/api/torrents/${encodeURIComponent(infoHash)}/select`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileIndices: Array.from(current) })
+      }).catch(err => console.warn('Failed to update file priority on backend:', err));
+      return updated;
     });
   };
 

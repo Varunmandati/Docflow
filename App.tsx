@@ -91,6 +91,8 @@ const App: React.FC = () => {
     });
 
     const [history, setHistory] = useState<HistoryEntry[]>([]);
+    const [historyInitialFilter, setHistoryInitialFilter] = useState<'failed' | 'success' | 'all'>('all');
+    const [historyFilterNonce, setHistoryFilterNonce] = useState(0);
 
     // Fetch history from backend API when authenticated
     useEffect(() => {
@@ -113,9 +115,11 @@ const App: React.FC = () => {
                     id: parseInt(job.id.replace(/-/g, '').slice(0, 8), 16) || Date.now(),
                     name: job.input_filename || 'Unknown file',
                     date: job.completed_at || job.queued_at || new Date().toISOString(),
-                    status: job.status === 'completed' ? 'Success' as const : 'Failed' as const,
+                    status: job.status === 'completed' ? 'Success' as const
+                        : job.status === 'failed' ? 'Failed' as const
+                        : 'Processing' as const,
                     url: job.status === 'completed' && job.download_token
-                        ? `/v1/files/download?token=${job.download_token}`
+                        ? `/v1/download/${job.download_token}`
                         : undefined,
                     type: job.job_type === 'compression' ? 'Compress' as const : 'Convert' as const,
                 }));
@@ -277,10 +281,10 @@ const App: React.FC = () => {
 
     const handleNavigateToHistory = (filter?: 'failed' | 'success' | 'all') => {
         setActivePage('history');
-        // Store the filter preference in state if needed for HistoryView to use
-        if (filter) {
-            localStorage.setItem('historyFilterPreference', filter);
-        }
+        // Pass the filter down as state so HistoryView (kept mounted for
+        // CSS transitions) re-applies it when the user clicks a dashboard card.
+        setHistoryInitialFilter(filter ?? 'all');
+        setHistoryFilterNonce(n => n + 1);
     };
 
     const handleSaveSettings = (newSettings: ConversionSettings) => {
@@ -347,6 +351,7 @@ const App: React.FC = () => {
                         name: p.name || prev.name,
                         email: p.email,
                         avatarUrl: p.avatarUrl || prev.avatarUrl,
+                        downloadedBytes: typeof p.downloadedBytes === 'number' ? p.downloadedBytes : prev.downloadedBytes,
                     }));
                 }
             } catch {
@@ -424,11 +429,8 @@ const App: React.FC = () => {
                                     <HistoryView 
                                         history={history} 
                                         t={t.history}
-                                        initialFilter={(() => {
-                                            const pref = localStorage.getItem('historyFilterPreference');
-                                            localStorage.removeItem('historyFilterPreference');
-                                            return pref as 'failed' | 'success' | 'all' | undefined;
-                                        })()}
+                                        initialFilter={historyInitialFilter}
+                                        filterNonce={historyFilterNonce}
                                     />
                                 </div>
                                 <div className="page-fade-in" style={{ display: activePage === 'settings' ? 'block' : 'none' }}>

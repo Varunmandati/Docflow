@@ -36,6 +36,7 @@ interface ConverterViewProps {
 
 const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversionComplete, onAddToHistory, defaultCompression, autoDelete, t, isAuthenticated, onAuthClick }) => {
     const [files, setFiles] = useState<AppFile[]>([]);
+    const filesRef = useRef<AppFile[]>([]);
     const [isConverting, setIsConverting] = useState<boolean>(false);
     const [progress, setProgress] = useState<{ current: number, total: number, percentage: number }>({ current: 0, total: 0, percentage: 0 });
     const [statusMessage, setStatusMessage] = useState<string>('');
@@ -44,6 +45,49 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     // New upload progress tracking
     const [uploadProgress, setUploadProgress] = useState<{ fileName: string; uploadedBytes: number; totalBytes: number; status: 'idle' | 'validating' | 'uploading' | 'complete' | 'failed'; error?: string; attemptNumber: number; }>({ fileName: '', uploadedBytes: 0, totalBytes: 0, status: 'idle', attemptNumber: 0 });
     const [conversionStages, setConversionStages] = useState<Array<{ id: string; name: string; status: 'pending' | 'in_progress' | 'complete' | 'failed'; progress: number; message?: string; estimatedDuration?: number; }>>([]);
+    const lastInitialFilesRef = useRef<File[] | null>(null);
+
+    // Backend conversion stages in order — used to drive the multi-stage UI.
+    const BACKEND_STAGE_SEQUENCE = ['queued', 'validating', 'converting', 'post-processing', 'finalizing', 'completed'] as const;
+    const BACKEND_STAGE_NAMES: Record<string, string> = {
+        queued: 'Queued',
+        validating: 'Validating',
+        converting: 'Converting',
+        'post-processing': 'Post-processing',
+        finalizing: 'Finalizing',
+        completed: 'Complete',
+    };
+
+    const stagesFromBackendStatus = (
+        stage: string,
+        status: 'queued' | 'in_progress' | 'completed' | 'failed',
+        backendProgress: number,
+        message?: string,
+    ): Array<{ id: string; name: string; status: 'pending' | 'in_progress' | 'complete' | 'failed'; progress: number; message?: string }> => {
+        const sequence = BACKEND_STAGE_SEQUENCE as readonly string[];
+        let currentIndex = sequence.indexOf(stage);
+        if (currentIndex < 0) currentIndex = stage === 'failed' ? 3 : 0;
+
+        return sequence.map((id, index) => {
+            const name = BACKEND_STAGE_NAMES[id] || id;
+            if (status === 'completed' || id === 'completed') {
+                return { id, name, status: 'complete' as const, progress: 100 };
+            }
+            if (status === 'failed' && index === currentIndex) {
+                return { id, name, status: 'failed' as const, progress: backendProgress, message };
+            }
+            if (index < currentIndex) {
+                return { id, name, status: 'complete' as const, progress: 100 };
+            }
+            if (index === currentIndex && status !== 'queued') {
+                return { id, name, status: 'in_progress' as const, progress: backendProgress, message };
+            }
+            if (index === currentIndex && status === 'queued') {
+                return { id, name, status: 'in_progress' as const, progress: 0, message };
+            }
+            return { id, name, status: 'pending' as const, progress: 0 };
+        });
+    };
     const [uploadError, setUploadError] = useState<{ title: string; message: string; suggestion?: string } | null>(null);
     
     const [mergeFiles, setMergeFiles] = useState<boolean>(true);
@@ -76,7 +120,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     }, [defaultCompression]);
 
     const OFFICE_EXTENSIONS = ['.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.odt', '.odp', '.ods', '.rtf', '.txt'];
-    const INPUT_ACCEPT = '.pdf,application/pdf,.tif,.tiff,image/tiff,.jpg,.jpeg,image/jpeg,.png,image/png,.bmp,image/bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.odp,.ods,.rtf,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.ms-powerpoint,application/vnd.ms-excel,text/plain';
+    const INPUT_ACCEPT = '.pdf,application/pdf,.tif,.tiff,image/tiff,.jpg,.jpeg,image/jpeg,.png,image/png,.bmp,image/bmp,.webp,image/webp,.gif,image/gif,.svg,image/svg+xml,.heic,image/heic,.avif,image/avif,image/*,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.odp,.ods,.rtf,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.ms-powerpoint,application/vnd.ms-excel,text/plain';
 
     const isOfficeDocument = (file: File): boolean => {
         const lower = file.name.toLowerCase();
@@ -85,8 +129,8 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
 
     const isSupportedImageFile = (file: File): boolean => {
         const lower = file.name.toLowerCase();
-        return ['.jpg', '.jpeg', '.png'].some(ext => lower.endsWith(ext)) ||
-               ['image/jpeg', 'image/png'].includes(file.type);
+        const imgExts = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff', '.svg', '.heic', '.heif', '.avif', '.ico'];
+        return imgExts.some(ext => lower.endsWith(ext)) || file.type.startsWith('image/');
     };
 
     const allFilesAreImages = (filesToCheck: File[]): boolean => {
@@ -228,12 +272,19 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             const globalProgress = Math.round(((fileIndex + backendProgress / 100) / totalFiles) * 100);
             setProgress({ current: fileIndex + 1, total: totalFiles, percentage: globalProgress });
             setStatusMessage(getBackendStageMessage(statusPayload.stage, statusPayload.message));
+            setConversionStages(stagesFromBackendStatus(
+                statusPayload.stage || 'queued',
+                statusPayload.status,
+                backendProgress,
+                statusPayload.message,
+            ));
 
             if (statusPayload.status === 'failed') {
                 throw new Error(statusPayload.error || `Backend conversion failed for ${appFile.file.name}`);
             }
 
             if (statusPayload.status === 'completed') {
+                setConversionStages(stagesFromBackendStatus('completed', 'completed', 100));
                 done = true;
                 break;
             }
@@ -351,6 +402,12 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             'image/jpeg',
             'image/png',
             'image/bmp',
+            'image/webp',
+            'image/gif',
+            'image/svg+xml',
+            'image/heic',
+            'image/heif',
+            'image/avif',
             'application/pdf',
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -367,6 +424,8 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         ];
         const validFiles = newFiles.filter(file =>
             allowedTypes.includes(file.type) ||
+            file.type.startsWith('image/') ||
+            isSupportedImageFile(file) ||
             file.name.toLowerCase().endsWith('.tif') ||
             file.name.toLowerCase().endsWith('.tiff') ||
             file.name.toLowerCase().endsWith('.pdf') ||
@@ -374,11 +433,12 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             file.name.toLowerCase().endsWith('.jpeg') ||
             file.name.toLowerCase().endsWith('.png') ||
             file.name.toLowerCase().endsWith('.bmp') ||
+            file.name.toLowerCase().endsWith('.webp') ||
             isOfficeDocument(file)
         );
 
         const newAppFiles: AppFile[] = validFiles.map(file => ({
-            id: `${file.name}-${file.lastModified}-${file.size}-${Math.random().toString(36).substr(2, 9)}`,
+            id: `${file.name}-${file.lastModified}-${file.size}`,
             file,
             pages: [],
             pageCount: 0,
@@ -386,12 +446,19 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             outputFormat: globalOutputFormat, // Default to current global selection
         }));
 
-        setFiles(prev => {
-            const existingIds = new Set(prev.map(f => f.id));
-            return [...prev, ...newAppFiles.filter(f => !existingIds.has(f.id))];
-        });
+        // Dedupe against the live list (ref) so we don't re-process files that
+        // are already present — setState updaters may run after this loop.
+        const existingIds = new Set(filesRef.current.map(f => f.id));
+        const filesToProcess = newAppFiles.filter(f => !existingIds.has(f.id));
+        if (filesToProcess.length > 0) {
+            filesRef.current = [...filesRef.current, ...filesToProcess];
+            setFiles(prev => {
+                const ids = new Set(prev.map(f => f.id));
+                return [...prev, ...filesToProcess.filter(f => !ids.has(f.id))];
+            });
+        }
 
-        for (const appFile of newAppFiles) {
+        for (const appFile of filesToProcess) {
             const pages: PageInfo[] = [];
             let pageCount = 0;
 
@@ -637,7 +704,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
 
         const selectedFiles = files.map(f => f.file);
         if (!allFilesAreImages(selectedFiles)) {
-            addToast('All selected files must be JPG or PNG images', 'error');
+            addToast('All selected files must be image files', 'error');
             return;
         }
 
@@ -699,8 +766,18 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     };
 
     useEffect(() => {
-        if (initialFiles.length > 0) handleFilesAdded(initialFiles);
+        // Only apply each initialFiles batch once. handleFilesAdded identity
+        // changes with globalOutputFormat and would otherwise re-add the same
+        // File objects as duplicates (IDs are random, so id-set filtering fails).
+        if (initialFiles.length === 0) return;
+        if (lastInitialFilesRef.current === initialFiles) return;
+        lastInitialFilesRef.current = initialFiles;
+        handleFilesAdded(initialFiles);
     }, [initialFiles, handleFilesAdded]);
+
+    useEffect(() => {
+        filesRef.current = files;
+    }, [files]);
     
     useEffect(() => {
         if (downloadableFiles.length === 1 && finalFileName && finalFileName !== downloadableFiles[0].name) {
@@ -733,6 +810,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         setDownloadableFiles([]);
         setAiSuggestedName('');
         setFinalFileName('');
+        setConversionStages([]);
     };
     
     const handleManageFile = (fileId: string) => {
@@ -1553,6 +1631,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
         if (files.length === 0) return;
         setIsConverting(true);
         setStatusMessage(t.status.initializing);
+        setConversionStages(stagesFromBackendStatus('queued', 'queued', 0));
 
         // Check if all files are PDFs targeting DOCX — route through backend LibreOffice
         const pdfToDocxFiles = files.filter(f => {
