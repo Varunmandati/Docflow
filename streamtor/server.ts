@@ -2,20 +2,41 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { promises as fsAsync } from 'fs';
-import { createServer as createViteServer } from 'vite';
 import WebTorrent from 'webtorrent';
 import 'dotenv/config';
+import { recordSpeedSample, getMeasuredSpeed, resetSpeedSmoothing, SPEED_SAMPLE_INTERVAL_MS } from './speed';
+
+// bittorrent-tracker can reject an in-flight fetch AbortError as an
+// unhandled promise rejection (timeout during body read). Without this
+// guard the whole StreamTor process exits and downloads stall.
+process.on('unhandledRejection', (reason) => {
+  const name = reason && (reason as any).name;
+  if (name === 'AbortError' || (reason as any)?.code === 'ABORT_ERR') return;
+  console.error('[process] unhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  if (err?.name === 'AbortError' || (err as any)?.code === 'ABORT_ERR') return;
+  console.error('[process] uncaughtException:', err);
+});
 
 const client = new WebTorrent({
   // High connection limit to sustain 500+ Mbps from many peers.
   // Each peer connection = one TCP stream; more connections = more aggregate bandwidth.
   maxConns: 500,
   maxWebConns: 100,
-  // uTP adds ~4x throughput penalty over TCP (its congestion control is
-  // extremely conservative), measured ~0.3 MB/s vs ~1.2 MB/s on a well-seeded
-  // torrent with identical peers. TCP is universally supported by seeders,
-  // so disabling uTP gets real multi-MB/s downloads.
-  utp: false,
+  // uTP enabled alongside TCP: with uTP off, peers that only speak uTP (or
+  // prefer it) never join the swarm, which shows up as 0 established
+  // connections even when trackers/DHT return peer lists. WebTorrent still
+  // opens TCP on torrentPort for peers that prefer TCP.
+  utp: true,
+  // Fixed listening ports so the OS firewall can allow inbound peer + DHT
+  // traffic. Without these, WebTorrent binds random ephemeral ports that
+  // Windows Firewall silently drops — DHT never gets replies, trackers
+  // see no listen port, and peer discovery stalls at 0–1 peers forever.
+  torrentPort: 6881,
+  dhtPort: 6882,
+  // Local Service Discovery finds peers on the same LAN without any tracker
+  lsd: true,
   dht: {
     bootstrap: [
       'router.bittorrent.com:6881',
@@ -24,74 +45,238 @@ const client = new WebTorrent({
       'router.bitcomet.com:6881',
       'dht.aelitis.com:6881',
       'dht.libtorrent.org:6881',
+      'bootstrap.mainline.bittorrent.ro:6881',
+      'dht.cyberdyne.org:6881',
     ]
   },
   tracker: true,
   downloadLimit: -1,
-  uploadLimit: -1,
+  // Cap upload to ~1 Mbps (125000 B/s) so upload/ACK traffic cannot
+  // saturate the uplink — uplink saturation causes bufferbloat that
+  // destroys download throughput on this line.
+  uploadLimit: 125000,
   // Per-torrent max peers (default 55 in WebTorrent 3.x) - raise to match high maxConns
   maxPeers: 200,
-  // Concurrency for piece verification — higher = faster progress updates
-  // at the cost of slightly more CPU. Default is 4 in WebTorrent 3.x.
-  numConcurrency: 16,
+  // Concurrency for piece verification
+  numConcurrency: 8,
 } as any);
 
 client.on('error', (err: any) => {
   console.error('Global WebTorrent error:', err);
 });
 
-// ── Speed measurement (sliding-window) ────────────────────────────────────
-// Keeps a ring buffer of {ts, downloaded, uploaded} samples per torrent.
-// Speed = (bytes_now - bytes_oldest_in_window) / elapsed.
-// This gives stable, accurate readings that directly reflect real throughput,
-// unlike EMA which is inherently noisy on per-poll deltas.
-const SPEED_WINDOW_MS = 10000; // 10-second sliding window
-const SPEED_MIN_SAMPLES = 2;   // need at least 2 samples to compute rate
-const speedSamples = new Map<string, Array<{ ts: number; downloaded: number; uploaded: number }>>();
+// ── Speed measurement ─────────────────────────────────────────────────────
+// The sliding-window math lives in ./speed.ts (unit-testable, side-effect
+// free). It is fed by the fixed-rate sampler below rather than by HTTP polls,
+// so every client sees the same, accurate number.
 
-function measureTorrentSpeed(infoHash: string, downloadedBytes: number, uploadedBytes: number) {
+// Fixed-rate sampler so measurements keep advancing even when no client is
+// polling — the first speed a UI ever sees is already accurate, never a ramp.
+setInterval(() => {
+  try {
+    if (!client || !client.torrents) return;
+    for (const t of client.torrents as any[]) {
+      if (!t || !t.infoHash || t.destroyed) continue;
+      const h = String(t.infoHash).toLowerCase();
+      const received = typeof t.received === 'number'
+        ? t.received
+        : (typeof t.downloaded === 'number' ? t.downloaded : 0);
+      const uploaded = typeof t.uploaded === 'number' ? t.uploaded : 0;
+      recordSpeedSample(h, received, uploaded);
+    }
+  } catch { /* telemetry must never break the server */ }
+}, SPEED_SAMPLE_INTERVAL_MS);
+
+// ── Stuck-torrent watchdog ─────────────────────────────────────────────────
+// Periodically force-re-announces torrents that are stalled (no metadata, no
+// peers, or zero download progress) so they pick up fresh peer lists from
+// trackers and DHT instead of sitting dead forever after a missed announce.
+const REANNOUNCE_INTERVAL_MS = 45_000; // check every 45s
+const STUCK_METADATA_MS = 60_000;      // not ready after 60s → stuck
+const STUCK_DOWNLOAD_MS = 90_000;      // ready but 0 bytes for 90s → stuck
+// Refresh trackers/DHT when download is healthy but under target throughput.
+// Default discovery interval is 15 minutes — far too slow to chase a ~16 Mbps line.
+const SLOW_REANNOUNCE_MS = 60_000;
+// ~12 Mbps: below this we periodically refresh peer lists to find faster sources.
+const SLOW_DOWNLOAD_BPS = 1_500_000;
+const torrentStuckSince = new Map<string, number>(); // infoHash → first stuck ts
+const lastSlowAnnounce = new Map<string, number>(); // infoHash → last slow re-announce ts
+
+function markTorrentStuck(infoHash: string): number {
   const now = Date.now();
-  let samples = speedSamples.get(infoHash);
-
-  if (!samples) {
-    samples = [];
-    speedSamples.set(infoHash, samples);
-  }
-
-  // Append new sample
-  samples.push({ ts: now, downloaded: downloadedBytes, uploaded: uploadedBytes });
-
-  // Prune samples older than the window
-  const cutoff = now - SPEED_WINDOW_MS;
-  while (samples.length > 1 && samples[0].ts < cutoff) {
-    samples.shift();
-  }
-
-  // Need at least 2 samples spanning >300ms to compute a rate
-  if (samples.length < SPEED_MIN_SAMPLES) {
-    return { down: 0, up: 0 };
-  }
-
-  const oldest = samples[0];
-  const newest = samples[samples.length - 1];
-  const elapsedSec = (newest.ts - oldest.ts) / 1000;
-
-  if (elapsedSec < 0.3) {
-    return { down: 0, up: 0 };
-  }
-
-  const deltaDown = Math.max(0, newest.downloaded - oldest.downloaded);
-  const deltaUp = Math.max(0, newest.uploaded - oldest.uploaded);
-
-  return {
-    down: deltaDown / elapsedSec,
-    up: deltaUp / elapsedSec
-  };
+  const existing = torrentStuckSince.get(infoHash);
+  if (existing) return now - existing;
+  torrentStuckSince.set(infoHash, now);
+  return 0;
 }
 
-function resetSpeedSmoothing(infoHash: string) {
-  speedSamples.delete(infoHash);
+function clearTorrentStuck(infoHash: string) {
+  torrentStuckSince.delete(infoHash);
 }
+
+function forceReannounce(t: any, reason: string) {
+  try {
+    const discovery = t && t.discovery;
+    if (!discovery) return;
+    if (discovery.tracker && typeof discovery.tracker.update === 'function') {
+      discovery.tracker.update();
+    }
+    if (discovery.dht && typeof discovery._dhtAnnounce === 'function') {
+      discovery._dhtAnnounce();
+    }
+    console.log(`[watchdog] re-announce (${reason}) for ${t.infoHash}`);
+  } catch (err) {
+    console.error(`[watchdog] re-announce failed (${reason}):`, err);
+  }
+}
+
+setInterval(() => {
+  try {
+    if (!client || !client.torrents) return;
+    for (const t of client.torrents as any[]) {
+      if (!t || !t.infoHash || t.destroyed) continue;
+      const h = String(t.infoHash).toLowerCase();
+
+      const isReady = !!t.ready;
+      const isPaused = !!(t as any).paused;
+      const downloaded = typeof t.downloaded === 'number' ? t.downloaded : 0;
+      const numPeers = typeof t.numPeers === 'number' ? t.numPeers : 0;
+
+      // Paused torrents are intentionally idle — don't treat them as stuck
+      if (isPaused) {
+        clearTorrentStuck(h);
+        continue;
+      }
+
+      // Healthy download but under line speed, or with a thin swarm, keep
+      // refreshing peer lists (default announce is every 15 min).
+      if (isReady && downloaded > 0) {
+        const speed = typeof t.downloadSpeed === 'number' ? t.downloadSpeed : 0;
+        const lowPeers = numPeers < 5;
+        const isSlow = speed < SLOW_DOWNLOAD_BPS;
+        if (isSlow || lowPeers) {
+          const interval = lowPeers ? 45_000 : SLOW_REANNOUNCE_MS;
+          const last = lastSlowAnnounce.get(h) || 0;
+          if (Date.now() - last >= interval) {
+            lastSlowAnnounce.set(h, Date.now());
+            const reason = lowPeers && isSlow
+              ? `peers=${numPeers} speed=${Math.round(speed)} B/s`
+              : lowPeers
+                ? `low peers=${numPeers}`
+                : `slow speed ${Math.round(speed)} B/s`;
+            forceReannounce(t, reason);
+          }
+        } else {
+          lastSlowAnnounce.delete(h);
+        }
+        // peers=0 is covered by lowPeers re-announce above (every 45s).
+        clearTorrentStuck(h);
+        continue;
+      }
+
+      // Metadata-less torrent that has been announced but still has no
+      // metadata after the threshold → force a fresh metadata fetch.
+      if (!isReady) {
+        const stuckMs = markTorrentStuck(h);
+        if (stuckMs >= STUCK_METADATA_MS) {
+          console.log(`[watchdog] Torrent ${h} has no metadata after ${Math.round(stuckMs / 1000)}s — re-announcing`);
+          try {
+            const discovery = (t as any).discovery;
+            if (discovery) {
+              if (discovery.tracker && typeof discovery.tracker.update === 'function') discovery.tracker.update();
+              if (discovery.dht && typeof discovery._dhtAnnounce === 'function') discovery._dhtAnnounce();
+            }
+          } catch (err) {
+            console.error(`[watchdog] metadata re-announce failed for ${h}:`, err);
+          }
+          torrentStuckSince.set(h, Date.now());
+        }
+        continue;
+      }
+
+      // Unhealthy → track how long it has been stuck
+      const stuckMs = markTorrentStuck(h);
+      const threshold = STUCK_DOWNLOAD_MS;
+      if (stuckMs < threshold) continue;
+
+      console.log(`[watchdog] Torrent ${h} stuck for ${Math.round(stuckMs / 1000)}s ` +
+        `(ready=${isReady}, peers=${numPeers}, downloaded=${downloaded}) — force re-announce`);
+
+      // Force tracker re-announce (bittorrent-tracker Client.update() sends
+      // an "update" event to every configured tracker URL).
+      try {
+        const discovery = t.discovery;
+        if (discovery) {
+          if (discovery.tracker && typeof discovery.tracker.update === 'function') {
+            discovery.tracker.update();
+          }
+          // Force a fresh DHT announce (get_peer + announce)
+          if (discovery.dht && typeof discovery._dhtAnnounce === 'function') {
+            discovery._dhtAnnounce();
+          }
+          // Push any PUBLIC_TRACKERS the torrent is missing, then rebuild
+          // the tracker client so the new URLs actually get announced to.
+          try {
+            const current: string[] = Array.isArray(discovery._announce)
+              ? discovery._announce.slice() : [];
+            const missing = PUBLIC_TRACKERS.filter(tr => !current.includes(tr));
+            if (missing.length > 0) {
+              discovery._announce = current.concat(missing);
+              if (discovery.tracker) {
+                const oldTracker = discovery.tracker;
+                try { oldTracker.stop(); } catch { /* ignore */ }
+                try {
+                  oldTracker.destroy(() => {
+                    try {
+                      discovery.tracker = discovery._createTracker();
+                      console.log(`[watchdog] Added ${missing.length} new trackers to ${h}`);
+                    } catch (e) { /* ignore */ }
+                  });
+                } catch { /* ignore */ }
+              }
+            }
+          } catch { /* non-fatal */ }
+        }
+      } catch (err) {
+        console.error(`[watchdog] re-announce failed for ${h}:`, err);
+      }
+
+      // Reset the stuck timer so we don't spam every 45s forever
+      torrentStuckSince.set(h, Date.now());
+    }
+  } catch (err) {
+    console.error('[watchdog] error:', err);
+  }
+}, REANNOUNCE_INTERVAL_MS);
+
+function countDhtNodes(): number {
+  try {
+    const dht: any = (client as any).dht;
+    if (!dht || !dht.nodes) return 0;
+    if (typeof dht.nodes.count === 'function') return dht.nodes.count() || 0;
+    if (typeof dht.nodes.size === 'number') return dht.nodes.size;
+    if (typeof dht.nodes.toArray === 'function') return (dht.nodes.toArray() || []).length;
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Periodic health line so logs show whether DHT bootstraps and whether any
+// peer wires are open — the main levers for download speed.
+setInterval(() => {
+  try {
+    const list = (client.torrents || []) as any[];
+    const t = list[0];
+    const wires = t && Array.isArray(t.wires) ? t.wires.length : 0;
+    const disc: any = t ? t.discovery : null;
+    console.log(
+      `[health] dhtNodes=${countDhtNodes()} torrents=${list.length} peers=${t ? t.numPeers : 0} ` +
+      `wires=${wires} announce=${disc && disc._announce ? disc._announce.length : 0} ` +
+      `down=${t ? t.downloaded : 0}`
+    );
+  } catch { /* non-fatal */ }
+}, 60_000);
 
 // TTL cache for on-disk progress checks. Without this, every stats poll
 // runs synchronous fs.statSync/fs.existsSync for every file of every torrent,
@@ -118,7 +303,9 @@ async function checkFileOnDiskCached(infoHash: string, torrentName: string, file
 // that runs on the event loop every poll). Only persist when progress has
 // moved by a meaningful amount or when enough time has passed.
 const lastMetaWrite = new Map<string, number>();
-const META_WRITE_INTERVAL_MS = 5000;
+// 15s: frequent writes + per-save console logs starve the event loop
+// while peers are transferring (API timeouts, download stalls).
+const META_WRITE_INTERVAL_MS = 15_000;
 
 function shouldWriteMeta(infoHash: string, stats: any): boolean {
   const last = lastMetaWrite.get(infoHash) || 0;
@@ -133,17 +320,75 @@ function shouldWriteMeta(infoHash: string, stats: any): boolean {
 const TORRENTS_JSON_PATH = path.join(process.cwd(), '.torrents', 'torrents.json');
 
 const PUBLIC_TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
   'udp://open.stealth.si:80/announce',
-  'udp://exodus.desync.com:6969/announce',
   'udp://tracker.torrent.eu.org:451/announce',
   'udp://explodie.org:6969/announce',
   'udp://tracker.dler.org:6969/announce',
-  'udp://tracker.opentrackr.org:1337/announce',
   'udp://open.demonii.com:1337/announce',
   'udp://open.tracker.cl:1337/announce',
   'udp://tracker.openbittorrent.com:6969/announce',
   'udp://p4p.arenabg.com:1337/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://opentracker.io:6969/announce',
+  'udp://tracker.bt4g.com:2095/announce',
+  'udp://tracker.moeking.me:6969/announce',
+  'udp://retracker.lanta-net.ru:2710/announce',
+  'udp://tracker.altrosky.nl:6969/announce',
+  'udp://valo.berlin:6969/announce',
+  'udp://tracker.birkenwald.de:6969/announce',
+  'udp://torrent.berli.ro:6969/announce',
+  'udp://tracker.pomf.se:80/announce',
+  'udp://open.dtmag.net:6969/announce',
+  'udp://tracker.tiny-vps.com:6969/announce',
+  'udp://public.popcorn-tracker.org:6969/announce',
+  'http://tracker.opentrackr.org:1337/announce',
+  'http://tracker.openbittorrent.com:80/announce',
+  'http://open.acgnxtracker.com:80/announce',
+  'http://tracker.bt4g.com:2095/announce',
+  'http://tracker.renfei.net:8080/announce',
+  'http://ipv4.rer.lol:2710/announce',
+  'http://tracker810.xyz:11450/announce',
+  'https://opentracker.i2p.rocks:443/announce',
+  'https://tracker.tamersunion.org:443/announce',
+  'https://tracker.nanoha.org:443/announce',
+  'wss://tracker.openwebtorrent.com',
+  'wss://tracker.btorrent.xyz',
+  'wss://tracker.webtorrent.dev',
+  'wss://tracker.files.fm:7073/announce',
 ];
+
+// RFC 5987/6266 Content-Disposition: ASCII fallback filename plus UTF-8
+// `filename*` so non-ASCII characters never corrupt the header.
+function contentDisposition(fileName: string): string {
+  const safe = String(fileName || 'download');
+  const ascii = safe.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(safe).replace(/['()*]/g, (c) =>
+    '%' + c.charCodeAt(0).toString(16).toUpperCase()
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+function extractInfoHash(magnet: string): string {
+  if (typeof magnet !== 'string') return '';
+  const match = magnet.match(/btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})/i);
+  if (!match) return '';
+  const hash = match[1];
+  if (hash.length === 40) return hash.toLowerCase();
+  // Decode Base32 to hex
+  const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (let i = 0; i < hash.length; i++) {
+    const val = base32Chars.indexOf(hash[i].toUpperCase());
+    if (val < 0) return '';
+    bits += val.toString(2).padStart(5, '0');
+  }
+  let hex = '';
+  for (let i = 0; i + 4 <= bits.length && hex.length < 40; i += 4) {
+    hex += parseInt(bits.substring(i, i + 4), 2).toString(16);
+  }
+  return hex.toLowerCase();
+}
 
 function addTrackersToMagnet(magnet: string): string {
   if (typeof magnet !== 'string' || !magnet.startsWith('magnet:')) {
@@ -237,7 +482,6 @@ async function saveTorrentMetadataJson(torrent: any, stats: any) {
     if (stats.ready) {
       await fsAsync.writeFile(metaPath, JSON.stringify(stats, null, 2), 'utf8');
       invalidateCachedStats(torrent.infoHash);
-      console.log(`Saved torrent metadata JSON cache for ${torrent.infoHash}`);
     }
   } catch (err) {
     console.error('Failed to save torrent metadata JSON cache:', err);
@@ -250,6 +494,8 @@ async function saveTorrentMetadataJson(torrent: any, stats: any) {
 // the last-read copy from memory for a few seconds instead.
 const cachedStatsCache = new Map<string, { expiresAt: number; stats: any }>();
 const CACHED_STATS_TTL_MS = 5000;
+let lastDeadScanTime = 0;
+let cachedDeadTorrents: any[] = [];
 
 async function getCachedTorrentStats(infoHash: string) {
   try {
@@ -283,7 +529,8 @@ function invalidateCachedStats(infoHash: string) {
 
 function cleanupTorrentMaps(infoHash: string) {
   const h = String(infoHash).toLowerCase();
-  speedSamples.delete(h);
+  resetSpeedSmoothing(h);
+  torrentStuckSince.delete(h);
   diskCheckCache.forEach((_, key) => {
     if (key.startsWith(h + '\u0000')) diskCheckCache.delete(key);
   });
@@ -386,15 +633,18 @@ async function loadSavedMagnets() {
           const torrentFilePath = path.join(torrentsDir, file);
           const torrentBuffer = await fsAsync.readFile(torrentFilePath);
           console.log(`Restoring persistent torrent meta-cache file: ${file}`);
-          client.add(torrentBuffer, {
+          const restored = client.add(torrentBuffer, {
             path: torrentsDir,
             announce: PUBLIC_TRACKERS,
             strategy: 'rarest',
             maxPeers: 200,
             maxConns: 200,
             maxWebConns: 50,
-            uploads: 20,
+            uploads: 10,
           } as any);
+          try {
+            restored.on('ready', () => saveTorrentFile(restored));
+          } catch { /* non-fatal */ }
           restoredCaches++;
         } catch (e) {
           console.error(`Failed to restore persistent torrent file ${file}:`, e);
@@ -424,15 +674,20 @@ async function loadSavedMagnets() {
           const hasCache = infoHash ? files.includes(`${infoHash}.torrent`) : false;
           if (!hasCache) {
             console.log('Restoring saved torrent magnet:', trackerMagnet.slice(0, 50));
-            client.add(trackerMagnet, { 
+            const restored = client.add(trackerMagnet, { 
               path: torrentsDir,
               strategy: 'rarest',
               announce: PUBLIC_TRACKERS,
               maxPeers: 200,
               maxConns: 200,
               maxWebConns: 50,
-              uploads: 20,
+              uploads: 10,
             } as any);
+            // Persist the full .torrent file as soon as metadata arrives so
+            // the next restart restores instantly without a DHT re-fetch.
+            try {
+              restored.on('ready', () => saveTorrentFile(restored));
+            } catch { /* non-fatal */ }
           }
         } catch (e) {
           console.error('Failed to restore saved magnet:', e);
@@ -517,7 +772,7 @@ async function startServer() {
 
   // API to add a torrent and get its metadata
   app.post('/api/torrents', async (req, res) => {
-    const { magnet } = req.body;
+    const { magnet } = req.body || {};
     if (!magnet) {
       return res.status(400).json({ error: 'Magnet link required' });
     }
@@ -527,8 +782,7 @@ async function startServer() {
       // the download resumes without a cold DHT/metadata bootstrap.
       let torrentId: string | Buffer = magnet;
       if (typeof magnet === 'string' && magnet.startsWith('magnet:')) {
-        const infoHashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/);
-        const cachedBh = infoHashMatch ? infoHashMatch[1].toLowerCase() : '';
+        const cachedBh = extractInfoHash(magnet);
         const cachedBuf = cachedBh ? await getCachedTorrentBuffer(cachedBh) : null;
         if (cachedBuf) {
           torrentId = cachedBuf;
@@ -551,8 +805,7 @@ async function startServer() {
 
       // Check if it's already in the client before adding to prevent duplicate exceptions
       if (typeof magnet === 'string' && magnet.startsWith('magnet:')) {
-        const infoHashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/);
-        const h = infoHashMatch ? infoHashMatch[1].toLowerCase() : '';
+        const h = extractInfoHash(magnet);
         if (h) {
           try {
             torrent = await client.get(h);
@@ -572,7 +825,7 @@ torrent = client.add(torrentId, {
             maxPeers: 200,
             maxConns: 200,
             maxWebConns: 50,
-            uploads: 20,
+            uploads: 10,
           } as any);
         } catch (addErr: any) {
           // If duplicate error, safely retrieve the existing torrent from client
@@ -667,36 +920,102 @@ torrent = client.add(torrentId, {
       }
 
       // Dead torrents (not in client anymore): serve from JSON cache
-      // so the UI still shows completed/removed torrents.
-      try {
-        const torrentsDir = path.join(process.cwd(), '.torrents');
-        const files = await fsAsync.readdir(torrentsDir);
-        const liveHashes = new Set(allStats.map(s => s.infoHash.toLowerCase()));
-        for (const file of files) {
-          if (file.toLowerCase().endsWith('.json') && file.toLowerCase() !== 'torrents.json') {
-            const h = file.slice(0, -5).toLowerCase();
-            if (liveHashes.has(h)) continue; // already have live stats
-            try {
-              const cached = await getCachedTorrentStats(h);
-              if (cached) {
-                allStats.push({
-                  ...cached,
-                  numPeers: 0,
-                  downloadSpeed: 0,
-                  uploadSpeed: 0,
-                });
-              }
-            } catch {}
+      // Cache dead torrent metadata scans for 4s so rapid 500ms UI polls don't hammer disk I/O.
+      const now = Date.now();
+      if (now - lastDeadScanTime > 4000) {
+        lastDeadScanTime = now;
+        cachedDeadTorrents = [];
+        try {
+          const torrentsDir = path.join(process.cwd(), '.torrents');
+          const files = await fsAsync.readdir(torrentsDir);
+          for (const file of files) {
+            if (file.toLowerCase().endsWith('.json') && file.toLowerCase() !== 'torrents.json') {
+              const h = file.slice(0, -5).toLowerCase();
+              try {
+                const cached = await getCachedTorrentStats(h);
+                if (cached) {
+                  cachedDeadTorrents.push({
+                    ...cached,
+                    numPeers: 0,
+                    downloadSpeed: 0,
+                    uploadSpeed: 0,
+                  });
+                }
+              } catch {}
+            }
           }
+        } catch {}
+      }
+
+      const liveHashes = new Set(allStats.map(s => s.infoHash.toLowerCase()));
+      for (const dead of cachedDeadTorrents) {
+        if (!liveHashes.has(dead.infoHash.toLowerCase())) {
+          allStats.push(dead);
         }
-      } catch {
-        // .torrents dir may not exist
       }
 
       res.json(allStats);
     } catch (err) {
       console.error('Error fetching torrents:', err);
       res.json([]);
+    }
+  });
+
+  // Read-only discovery diagnostics: DHT node count, open wires, announce list.
+  // Used to verify peer discovery without pausing/re-adding the torrent.
+  app.get('/api/torrents/debug', async (req, res) => {
+    try {
+      const dht: any = (client as any).dht;
+      const list = (client.torrents || []) as any[];
+      const torrents = list.map((t) => {
+        const disc: any = t.discovery;
+        const tracker: any = disc && disc.tracker;
+        let trackers: any[] | null = null;
+        if (tracker && Array.isArray(tracker._trackers)) {
+          trackers = tracker._trackers.map((tr: any) => ({
+            announce: tr.announceUrl || tr.announce || null,
+            type: tr.constructor ? tr.constructor.name : null,
+          }));
+        }
+        const wires = Array.isArray(t.wires) ? t.wires : [];
+        return {
+          infoHash: t.infoHash || '',
+          ready: !!t.ready,
+          paused: !!t.paused,
+          numPeers: typeof t.numPeers === 'number' ? t.numPeers : 0,
+          wires: wires.length,
+          wirePeers: wires.map((w: any) => ({
+            remote: w.remoteAddress ? `${w.remoteAddress}:${w.remotePort}` : null,
+            type: w.type || null,
+          })),
+          downloaded: typeof t.downloaded === 'number' ? t.downloaded : 0,
+          uploaded: typeof t.uploaded === 'number' ? t.uploaded : 0,
+          announceCount: disc && Array.isArray(disc._announce) ? disc._announce.length : 0,
+          hasDiscovery: !!disc,
+          hasTracker: !!(disc && disc.tracker),
+          hasDht: !!(disc && disc.dht),
+          dhtAnnouncing: !!(disc && disc._dhtAnnouncing),
+          trackers,
+        };
+      });
+      res.json({
+        client: {
+          utp: !!(client as any).utp,
+          torrentPort: (client as any).torrentPort,
+          dhtPort: (client as any).dhtPort,
+          listening: !!(client as any).listening,
+          maxConns: (client as any).maxConns,
+          downloadLimit: (client as any)._downloadLimit,
+          uploadLimit: (client as any)._uploadLimit,
+          dhtEnabled: !!dht,
+          dhtListening: dht ? !!dht.listening : false,
+          dhtNodes: countDhtNodes(),
+          torrents: list.length,
+        },
+        torrents,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'debug failed' });
     }
   });
 
@@ -780,8 +1099,9 @@ torrent = await client.add(torrentBuffer, {
             maxPeers: 200,
             maxConns: 200,
             maxWebConns: 50,
-            uploads: 20,
+            uploads: 10,
           } as any);
+          try { torrent.on('ready', () => saveTorrentFile(torrent)); } catch {}
           } else {
             try {
               const data = await fsAsync.readFile(TORRENTS_JSON_PATH, 'utf8');
@@ -796,8 +1116,9 @@ torrent = await client.add(torrentBuffer, {
               maxPeers: 200,
               maxConns: 200,
               maxWebConns: 50,
-              uploads: 20,
+              uploads: 10,
             } as any);
+                try { torrent.on('ready', () => saveTorrentFile(torrent)); } catch {}
               }
             } catch {}
           }
@@ -824,7 +1145,8 @@ torrent = await client.add(torrentBuffer, {
           break;
         case 'remove': {
           const name = torrent.name || h;
-          client.remove(h, { destroyStore: true }, () => {
+          try {
+            client.remove(h, { destroyStore: true }, () => {
             // Delete the on-disk meta caches for this infoHash so it does not
             // get auto-restored on the next server start.
             (async () => {
@@ -843,7 +1165,10 @@ torrent = await client.add(torrentBuffer, {
               console.log(`Removed torrent ${h} (${name})`);
               cleanupTorrentMaps(h);
             })();
-          });
+            });
+          } catch (removeErr) {
+            console.error(`Failed to remove torrent ${h}:`, removeErr);
+          }
           return res.json({ infoHash: h, removed: true });
         }
         default:
@@ -866,7 +1191,11 @@ torrent = await client.add(torrentBuffer, {
       let removed = 0;
       if (client && client.torrents) {
         client.torrents.slice().forEach(t => {
-          client.remove((t as any).infoHash, { destroyStore: true });
+          try {
+            client.remove((t as any).infoHash, { destroyStore: true });
+          } catch (removeErr) {
+            console.error('Cleanup remove failed:', removeErr);
+          }
           removed++;
         });
       }
@@ -906,7 +1235,7 @@ torrent = await client.add(torrentBuffer, {
   app.post('/api/torrents/:infoHash/select', async (req, res) => {
     try {
       const { infoHash } = req.params;
-      const { fileIndices } = req.body; // array of file indices to download
+      const { fileIndices } = req.body || {}; // array of file indices to download
       const h = infoHash.toLowerCase();
 
       let torrent: any = null;
@@ -1033,7 +1362,7 @@ torrent = await client.add(torrentBuffer, {
       console.log('Serving fully completed file natively from server disk:', absPath);
 
       // Web browsers request ranges for smooth seeking and resuming downloads
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/"/g, '\\"')}"`);
+      res.setHeader('Content-Disposition', contentDisposition(fileName));
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('X-Accel-Buffering', 'no');
@@ -1119,8 +1448,9 @@ torrent = await client.add(torrentBuffer, {
             maxPeers: 200,
             maxConns: 200,
             maxWebConns: 50,
-            uploads: 20,
+            uploads: 10,
           } as any);
+          try { torrent.on('ready', () => saveTorrentFile(torrent)); } catch {}
           // Wait for ready state
           await new Promise<void>((resolve, reject) => {
             if (torrent.ready) { resolve(); return; }
@@ -1152,7 +1482,7 @@ torrent = await client.add(torrentBuffer, {
       const fileSize = file.length;
 
       // Set response headers
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/"/g, '\\"')}"`);
+      res.setHeader('Content-Disposition', contentDisposition(fileName));
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
@@ -1206,7 +1536,7 @@ torrent = await client.add(torrentBuffer, {
   // ── Direct Torrent Download with Auto-Add ─────────────────────────────────
   // Accepts magnet/.torrent data, adds torrent, and immediately streams.
   app.post('/api/torrents/stream', async (req, res) => {
-    const { magnet, file: fileQuery } = req.body;
+    const { magnet, file: fileQuery } = req.body || {};
     if (!magnet) {
       return res.status(400).json({ error: 'Magnet link or torrent data required' });
     }
@@ -1255,8 +1585,9 @@ torrent = await client.add(torrentBuffer, {
           maxPeers: 200,
           maxConns: 200,
           maxWebConns: 50,
-          uploads: 20,
+          uploads: 10,
         } as any);
+        try { torrent.on('ready', () => saveTorrentFile(torrent)); } catch {}
       }
 
       // Wait for metadata
@@ -1287,7 +1618,7 @@ torrent = await client.add(torrentBuffer, {
       const fileName = file.name || 'download';
       const fileSize = file.length;
 
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/"/g, '\\"')}"`);
+      res.setHeader('Content-Disposition', contentDisposition(fileName));
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Accept-Ranges', 'bytes');
 
@@ -1332,8 +1663,11 @@ torrent = await client.add(torrentBuffer, {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  // Vite middleware for development (loaded after listen so startup is not blocked)
+  // Vite middleware for development (loaded after listen so startup is not blocked).
+  // Imported lazily: in production this branch never runs, so the Vite toolchain
+  // (esbuild, rollup, lightningcss, ...) does not have to ship in the image.
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -1418,12 +1752,8 @@ async function getTorrentStats(t: WebTorrent.Torrent) {
       ? (t as any).downloaded
       : totalDownloaded;
 
-    // Speed from byte counter deltas (real-time, not WebTorrent's laggy average)
-    const measured = measureTorrentSpeed(
-      infoHash,
-      (t as any).downloaded || 0,
-      (t as any).uploaded || 0
-    );
+    // Speed from the server-owned sampler (exact wire bytes over a 3s window)
+    const measured = getMeasuredSpeed(infoHash, t as any);
 
     // Safety: ensure no NaN/Infinity leaks into JSON response
     const safeNum = (v: any, fallback = 0) => typeof v === 'number' && Number.isFinite(v) ? v : fallback;
@@ -1438,7 +1768,12 @@ async function getTorrentStats(t: WebTorrent.Torrent) {
       numPeers: safeNum(t.numPeers, 0),
       length: safeNum(totalLength, 0),
       downloaded: safeNum(reportedDownloaded, 0),
-      timeRemaining: isDone ? 0 : safeNum(t.timeRemaining, 0),
+      // ETA derived from the same measured rate that is shown in the UI, so the
+      // countdown can never disagree with the speed next to it. A zero rate
+      // yields Infinity → safeNum → 0, exactly like WebTorrent's own getter.
+      timeRemaining: isDone || measured.down <= 0
+        ? 0
+        : safeNum(Math.max(0, totalLength - reportedDownloaded) / measured.down * 1000, 0),
       done: isDone,
       ready: isReady || (processedFiles.length > 0),
       files: processedFiles.map(f => ({
@@ -1477,7 +1812,7 @@ async function getTorrentStats(t: WebTorrent.Torrent) {
   } catch (err) {
     console.error('Error getting torrent stats:', err);
     if (t && t.infoHash) {
-      const cached = getCachedTorrentStats(t.infoHash.toLowerCase());
+      const cached = await getCachedTorrentStats(t.infoHash.toLowerCase());
       if (cached) {
         return cached;
       }
