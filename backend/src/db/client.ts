@@ -23,6 +23,16 @@ export const workerPool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
 });
 
+// An idle client whose backend connection dies (Postgres restart, network
+// blip) emits 'error' on the pool. Without a listener Node treats it as an
+// unhandled 'error' event and crashes the whole process.
+const logPoolError = (source: string) => (err: Error) => {
+  // eslint-disable-next-line no-console
+  console.error(`[pg:${source}] pool error:`, err);
+};
+apiPool.on('error', logPoolError('api'));
+workerPool.on('error', logPoolError('worker'));
+
 // CRITICAL: Set RLS context for every API query inside a transaction block
 // Call this wrapper for all user-scoped queries
 export async function withUserContext<T>(

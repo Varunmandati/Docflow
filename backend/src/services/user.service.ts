@@ -84,23 +84,12 @@ export class UserService {
 
       const user = result.rows[0];
 
-      // Keep the stored email in sync with the Firebase token. The ON CONFLICT
-      // upsert intentionally does not touch email (to avoid racing with the
-      // email-change flow), so reconcile here only when the stored email
-      // differs AND no other active account owns the target address.
-      if (user.email !== normalizedEmail) {
-        const collision = await client.query(
-          `SELECT 1 FROM users WHERE email = $1 AND id <> $2 AND is_active = TRUE`,
-          [normalizedEmail, user.id]
-        );
-        if (collision.rowCount === 0) {
-          await client.query(
-            `UPDATE users SET email = $1, email_verified = TRUE WHERE id = $2`,
-            [normalizedEmail, user.id]
-          );
-          user.email = normalizedEmail;
-        }
-      }
+      // DO NOT overwrite users.email from the Firebase token. The email-change
+      // OTP flow (verifyEmailChangeOtp) updates users.email in the DB, but the
+      // Firebase token still carries the old address — overwriting here reverts
+      // the verified change on the next authenticated request. Only reconcile
+      // when the target address is genuinely free AND the stored email is not a
+      // verified change (we can't distinguish that here safely), so we skip.
 
       // Create default preferences if new user
       await client.query(
