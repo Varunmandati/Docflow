@@ -36,9 +36,9 @@ describe('File Validation Service', () => {
             return filePath;
         };
 
-        it('rejects .upload files, which are no longer supported', async () => {
-            const filePath = await writeFixture('demo.upload', Buffer.from('d4:infod4:name4:demoee'));
-            const result = await validateFile(filePath, 'application/x-binary-transfer', 'demo.upload');
+        it('rejects files with a disallowed extension', async () => {
+            const filePath = await writeFixture('malware.xyz', Buffer.from('MZ this is not a document'));
+            const result = await validateFile(filePath, 'application/octet-stream', 'malware.xyz');
             expect(result.valid).toBe(false);
             expect(result.error).toContain('File type not allowed');
         });
