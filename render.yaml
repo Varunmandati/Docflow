@@ -3,7 +3,7 @@ services:
     name: docflow-backend
     runtime: docker
     plan: free
-    dockerfilePath: Dockerfile.render
+    dockerfilePath: Dockerfile
     healthCheckPath: /health
     envVars:
       - key: PORT
@@ -34,6 +34,11 @@ services:
         value: "redis://127.0.0.1:6379"
       - key: RUN_INLINE_WORKERS
         value: "true"
+      # The root image runs the SPA, the API and the queue workers in one
+      # process; this is what makes RUN_INLINE_WORKERS=true legal in
+      # production (see assertProductionInvariants in backend/src/config/env.ts).
+      - key: SINGLE_CONTAINER
+        value: "true"
       - key: EMAIL_TRANSPORT
         value: "resend"
       - key: RATE_LIMIT_EXPENSIVE_FALLBACK
@@ -55,8 +60,10 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
-      - key: CORS_ORIGIN
-        sync: false
+      # CORS_ORIGIN is deliberately absent: the default (empty) means
+      # same-origin only, which is exactly right now that this one service
+      # serves both the SPA and the API. Setting "*" would fail the
+      # production boot check.
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
       # Firebase Private Key (Alternative if not using FIREBASE_SERVICE_ACCOUNT JSON).

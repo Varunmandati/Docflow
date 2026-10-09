@@ -84,7 +84,7 @@ Deploying on free infrastructure entails specific operational constraints:
    - *Option B (Manual Web Service)*:
      - Name: `docflow-backend`
      - Runtime: **Docker**
-     - Dockerfile Path: `Dockerfile.render`
+     - Dockerfile Path: `Dockerfile` (the root image - SPA + API + inline workers in one container)
      - Instance Type: **Free**
      - Health Check Path: `/health`
 3. In the **Environment** tab, configure the variables listed in `.env.render.example`:
@@ -95,6 +95,7 @@ Deploying on free infrastructure entails specific operational constraints:
    - `LOCAL_REDIS=true`
    - `REDIS_URL=redis://127.0.0.1:6379`
    - `RUN_INLINE_WORKERS=true`
+   - `SINGLE_CONTAINER=true`
    - `WORKER_CONCURRENCY=1`
    - `HEAVY_JOB_CONCURRENCY=1`
    - `MAX_UPLOAD_BYTES=15728640`
@@ -118,7 +119,7 @@ Deploying on free infrastructure entails specific operational constraints:
 
 1. **Stage 1 — Deploy Render Backend First**:
    - Deploy your Web Service on Render using `render.yaml` or Docker.
-   - For initial deployment, you can set `CORS_ORIGIN=*` or leave it empty so it accepts requests while configuring the frontend.
+   - For initial deployment, leave `CORS_ORIGIN` empty (same-origin, the default) or set it to the exact frontend origin. Never `*` - the production boot check rejects it.
    - Once the build succeeds and health checks pass, copy your live backend URL (e.g. `https://docflow-backend.onrender.com`).
 
 2. **Stage 2 — Deploy Vercel Frontend Second**:

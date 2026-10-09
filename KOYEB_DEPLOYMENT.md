@@ -66,7 +66,7 @@ A separate Vercel frontend is optional (see [Step 2](#optional-step-2-deploy-fro
 | `RESEND_API_KEY` | `re_...` | From [resend.com](https://resend.com) |
 | `EMAIL_FROM` | `DocFlow <noreply@yourdomain.com>` | Or `onboarding@resend.dev` for testing |
 | `FIREBASE_SERVICE_ACCOUNT` | `{"type":"service_account",...}` | Minified single-line JSON |
-| `CORS_ORIGIN` | `*` | Only needed if you also host a frontend elsewhere (e.g. Vercel) |
+| `CORS_ORIGIN` | *(leave empty)* | Same-origin by default (SPA + API share the container). Set only if you also host a frontend elsewhere - never `*`, the production boot check rejects it |
 | `VITE_FIREBASE_API_KEY` | `<Web API key>` | Public browser identifiers, read at **build** time |
 | `VITE_FIREBASE_AUTH_DOMAIN` | `<project>.firebaseapp.com` | Firebase Auth domain |
 | `VITE_FIREBASE_PROJECT_ID` | `<project>` | Firebase project id |
@@ -107,7 +107,7 @@ Skip this step for the default all-in-one deployment — the SPA is already serv
 
 ### Optional Step 3: Lock Down `CORS_ORIGIN` on Koyeb
 
-Only needed for the optional Vercel split. With the all-in-one container the SPA and API share an origin, so leave `CORS_ORIGIN=*` (or unset).
+Only needed for the optional Vercel split. With the all-in-one container the SPA and API share an origin, so leave `CORS_ORIGIN` unset (empty).
 
 1. Return to the **Koyeb Control Panel** $\rightarrow$ your Service $\rightarrow$ **Settings** $\rightarrow$ **Environment variables**.
 2. Edit `CORS_ORIGIN`:

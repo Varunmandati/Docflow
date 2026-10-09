@@ -38,6 +38,11 @@ const EnvSchema = z.object({
     // Local development and any split-origin deployment must set it explicitly.
     CORS_ORIGIN: z.string().default(''),
     RUN_INLINE_WORKERS: z.string().default('false'),
+    // Deployment shape. "true" means one container runs the API and the queue
+    // workers in a single process (root Dockerfile, Render, Koyeb, fly, root
+    // docker-compose). Split deployments (deploy/oci) leave it unset: their API
+    // must not run workers inline because a dedicated worker container does.
+    SINGLE_CONTAINER: z.string().default('false'),
     SMTP_HOST: z.string().default('smtp.gmail.com'),
     SMTP_PORT: z.coerce.number().int().positive().default(587),
     SMTP_USER: z.string().optional().default(''),
@@ -118,10 +123,18 @@ function assertProductionInvariants(config: typeof parsed): void {
         );
     }
 
-    if (config.RUN_INLINE_WORKERS === 'true') {
+    if (config.RUN_INLINE_WORKERS === 'true' && config.SINGLE_CONTAINER !== 'true') {
         problems.push(
             'RUN_INLINE_WORKERS must be "false" in production so conversion work runs in the dedicated ' +
-            'worker container rather than competing with request handling inside the API.',
+            'worker container rather than competing with request handling inside the API. Set ' +
+            'SINGLE_CONTAINER=true only for all-in-one deployments where API and workers share a process.',
+        );
+    }
+
+    if (config.RUN_INLINE_WORKERS !== 'true' && config.SINGLE_CONTAINER === 'true') {
+        problems.push(
+            'SINGLE_CONTAINER=true requires RUN_INLINE_WORKERS=true: an all-in-one container has no ' +
+            'dedicated worker process, so queued conversions would never be processed.',
         );
     }
 
@@ -137,7 +150,8 @@ function assertProductionInvariants(config: typeof parsed): void {
         throw new Error(
             'Refusing to start in production with an unsafe configuration:\n' +
             problems.map((p) => `  - ${p}`).join('\n') +
-            '\n\nSee deploy/oci/.env.example for the required production values.',
+            '\n\nSee deploy/oci/.env.example (split deployments) or .env.production.example ' +
+            '(all-in-one deployments) for the required production values.',
         );
     }
 }
@@ -147,6 +161,7 @@ assertProductionInvariants(parsed);
 export const env = {
     ...parsed,
     RUN_INLINE_WORKERS: parsed.RUN_INLINE_WORKERS === 'true',
+    SINGLE_CONTAINER: parsed.SINGLE_CONTAINER === 'true',
     RUN_MIGRATIONS_ON_START: parsed.RUN_MIGRATIONS_ON_START === 'true',
     TRUST_PROXY: parseTrustProxy(parsed.TRUST_PROXY),
     STORAGE_ROOT: path.resolve(process.cwd(), parsed.STORAGE_ROOT),

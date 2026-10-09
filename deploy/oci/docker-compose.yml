@@ -154,7 +154,9 @@ services:
     environment:
       NODE_ENV: production
       STORAGE_ROOT: /data/docflow/storage
-      RUN_INLINE_WORKERS: "true"   # irrelevant here, but keeps health logic honest
+      RUN_INLINE_WORKERS: "false"  # split shape: only the API's flag matters for
+      # /v1/health, and the worker entrypoint ignores this flag entirely - it
+      # always starts its queue workers itself.
       TRUST_PROXY: "1"
       # Same construction as the API's, from the one REDIS_PASSWORD source.
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required in .env}@redis:6379

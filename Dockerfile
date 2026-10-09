@@ -113,6 +113,10 @@ USER node
 EXPOSE 8080
 ENV PORT=8080
 ENV HOST=0.0.0.0
+# This image is all-in-one by design (SPA + API + inline queue workers in one
+# process). The flag lets the production config invariant accept
+# RUN_INLINE_WORKERS=true; a split deployment builds from deploy/oci instead.
+ENV SINGLE_CONTAINER=true
 
 # Lightweight liveness healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \

@@ -30,11 +30,13 @@ services:
       - "${DOCFLOW_PORT:-8080}:8080"
     env_file:
       - .env
-    # Belt and braces: these two are what make the container production-correct
+    # Belt and braces: these are what make the container production-correct
     # even if the .env file is trimmed down.
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
+      SINGLE_CONTAINER: "true"
+      RUN_INLINE_WORKERS: "true"
     # unless-stopped gives us 24/7 uptime across reboots without Docker's
     # daemon-wide restart policy side effects.
     restart: unless-stopped
