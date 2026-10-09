@@ -1,6 +1,6 @@
 # DocFlow Production Deployment Guide: Koyeb (all-in-one)
 
-This guide documents deploying DocFlow completely free ($0/month, no credit card) on **a single Koyeb service** that runs the whole product — React SPA, Fastify API, queue workers and StreamService — from the root `Dockerfile`.
+This guide documents deploying DocFlow completely free ($0/month, no credit card) on **a single Koyeb service** that runs the whole product — React SPA, Fastify API and queue workers — from the root `Dockerfile`.
 
 A separate Vercel frontend is optional (see [Step 2](#optional-step-2-deploy-frontend-to-vercel)); everything works from one URL without it.
 
@@ -8,9 +8,8 @@ A separate Vercel frontend is optional (see [Step 2](#optional-step-2-deploy-fro
 
 ## 🏛️ Architecture Overview
 
-- **Everything in one container**: the root `Dockerfile` builds the SPA, the API and StreamService, and Fastify serves the SPA itself from `./dist`. One public port (`8080`), one public URL.
+- **Everything in one container**: the root `Dockerfile` builds the SPA and the API, and Fastify serves the SPA itself from `./dist`. One public port (`8080`), one public URL.
 - **Backend API & Queue Worker**: Fastify + Node.js on **Koyeb Free Instance** (512 MB RAM, 0.1 vCPU, 2 GB SSD, scales down after 1 hour idle, no credit card required).
-- **StreamService (WebClient)**: runs on `127.0.0.1:3002` inside the same container and is reachable only through the API's `/api/uploads` reverse proxy. `start.sh` mints a shared `STREAM_INTERNAL_TOKEN` at boot when none is set.
 - **Queue & Rate Limiting**: In-container Redis instance (`LOCAL_REDIS=true`, 64 MB cap, noeviction policy, no disk writes), avoiding external Redis quota limits.
 - **Database**: PostgreSQL on **Neon** (Free serverless Postgres with pooling).
 - **Email Delivery**: Resend HTTPS API (`EMAIL_TRANSPORT=resend`), bypassing cloud firewall port restrictions.
@@ -75,10 +74,6 @@ A separate Vercel frontend is optional (see [Step 2](#optional-step-2-deploy-fro
 | `VITE_FIREBASE_MESSAGING_SENDER_ID` | `<id>` | Firebase messaging sender |
 | `VITE_FIREBASE_APP_ID` | `1:...:web:...` | Firebase web app id |
 | `VITE_API_BASE_URL` | *(empty)* | Empty = same-origin relative URLs, correct for the all-in-one container |
-| `VITE_UPLOAD_SERVER_URL` | *(empty)* | Empty = the SPA calls `/api/uploads` on its own origin |
-| `STREAM_ENABLED` | `true` | Set `false` to reclaim ~100 MB if the instance runs out of memory |
-| `STREAM_PORT` | `3002` | Internal only, never exposed publicly |
-| `STREAM_INTERNAL_TOKEN` | *(leave unset)* | `start.sh` mints one at boot and shares it with the API |
 
 > `VITE_*` values are inlined into the browser bundle **during the build**. If the first build ran before you added them, hit **Redeploy** afterwards.
 
@@ -133,7 +128,6 @@ Only needed for the optional Vercel split. With the all-in-one container the SPA
 
 - [ ] `GET /health` returns `200 OK` with `{"status":"ok",...}`.
 - [ ] Opening the app URL serves the SPA (`/` and a deep link such as `/login` both return the HTML shell).
-- [ ] `/api/uploads` answers (a `401` without a Firebase token is correct; a `502` means StreamService did not start — check the logs for `[start] Launching StreamService`).
 - [ ] OTP login email is received via Resend.
 - [ ] Single file conversion (Word, PDF, Image) converts and downloads cleanly.
 - [ ] App stays idle for up to 1 hour before sleeping (wakes up automatically on next visit).

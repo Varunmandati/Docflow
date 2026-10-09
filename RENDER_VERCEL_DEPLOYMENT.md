@@ -1,12 +1,12 @@
 # Deploying DocFlow for Free (Render + Vercel)
 
-This architecture lets you deploy the full document conversion engine, upload proxy, and React frontend absolutely free of charge.
+This architecture lets you deploy the full document conversion engine and React frontend absolutely free of charge.
 
 ## Architecture
 
 Your application is split into two physical locations:
 1.  **Frontend (React/Vite)**: Deployed to **Vercel** ($0/month).
-2.  **Backend (API + Worker + StreamService)**: Deployed to **Render's Free Web Service** ($0/month).
+2.  **Backend (API + Worker)**: Deployed to **Render's Free Web Service** ($0/month).
 
 To power the application state and conversion queue without paying for Render's expensive persistent databases, we use external serverless database providers.
 
@@ -22,7 +22,7 @@ Before touching Render or Vercel, you need database connection strings.
 
 ## Step 2: Deploy the Backend to Render
 
-Our root `Dockerfile` has been optimized to do all the heavy lifting in a single free container. It installs LibreOffice, Python OCR tools, dependencies, and runs both the Fastify API (with an inline queue worker) and the StreamService proxy simultaneously using `concurrently`.
+Our root `Dockerfile.render` has been optimized to do all the heavy lifting in a single free container. It installs LibreOffice, Python OCR tools, dependencies, and runs the Fastify API with an inline queue worker.
 
 1.  Create an account on **Render.com**.
 2.  Click **New -> Web Service**.
@@ -39,7 +39,6 @@ Our root `Dockerfile` has been optimized to do all the heavy lifting in a single
     *   `DATABASE_URL_WORKER`: *<Your Neon URL>*
     *   `REDIS_URL`: *<Your Upstash URL>*
     *   `RUN_INLINE_WORKERS`: `true` *(This is vital. It forces the Queue Worker to run inside the API process, saving you from needing a paid Render Background Worker plan)*
-    *   `STREAM_INTERNAL_URL`: `http://127.0.0.1:3002`
     *   `PORT`: `8080`
     *   `CORS_ORIGIN`: `*` *(Or your future Vercel domain)*
     *   *Add any Firebase or SMTP variables (`SMTP_HOST`, `SMTP_USER`, etc.) required by your `.env`.*

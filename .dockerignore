@@ -3,18 +3,46 @@ node_modules
 # Host builds of the nested packages must not be copied over the ones the
 # stages install themselves (they are rebuilt from package-lock.json anyway)
 backend/node_modules
-stream-service/node_modules
+
+# ---------------------------------------------------------------------------
+# Secrets.
+#
+# A slash-less pattern in .dockerignore is anchored to the context ROOT, so
+# `.env` alone only ever excluded `./.env`. Nested `.env` files (notably
+# `backend/.env`, which holds FIREBASE_SERVICE_ACCOUNT and the database
+# credentials) were therefore shipped into the build context and baked into
+# the runtime images by `COPY backend ./backend`. The `**/` forms below are
+# what make the exclusion apply at every depth.
+# ---------------------------------------------------------------------------
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*service-account*.json
+!.env.example
+!**/.env.example
+!**/.env.*.example
+
+# Build output. Every stage compiles from source with `npm ci` + `tsc`/`vite`,
+# so shipping host `dist/` directories only adds context size and lets stale
+# artefacts (including compiled output of deleted modules) reach the image.
+dist
+**/dist
+dist-ssr
+
 # Local test artefacts, not part of a deployable image
 backend/storage
-.env
-.env.*
-!.env.example
-.git
 storage
-.uploads
-**/.uploads
-.upload-cache
+
+# Logs. `**/*.log` rather than `*.log`, which would only match at the root and
+# left ~15 nested dev logs (containing absolute host paths and filenames) in
+# the context.
+*.log
+**/*.log
+
+.git
 migrated_prompt_history
 .agents
 .github
-*.log
+node_modules
+deploy/oci/.env

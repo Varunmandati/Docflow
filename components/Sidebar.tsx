@@ -1,6 +1,6 @@
 import React from 'react';
 import { Page } from '../App';
-import { LogoIcon, ChevronLeftIcon, DashboardIcon, UploadIcon, HistoryIcon, SettingsIcon, ProfileIcon, CompressIcon, ZapIcon, StreamIcon, ImageIcon } from './Icons';
+import { LogoIcon, ChevronLeftIcon, DashboardIcon, UploadIcon, HistoryIcon, SettingsIcon, ProfileIcon, CompressIcon, ZapIcon, ImageIcon } from './Icons';
 import { SidebarTranslation } from '../translations';
 import ThreeDLogo from './ThreeDLogo';
 
@@ -68,7 +68,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, setActivePage, isCollapse
                          <NavItem icon={DashboardIcon} label={t.dashboard} isActive={activePage === 'dashboard'} isCollapsed={collapsed} onClick={() => setActivePage('dashboard')} />
                          <NavItem icon={CompressIcon} label={t.compress} isActive={activePage === 'compress'} isCollapsed={collapsed} onClick={() => setActivePage('compress')} />
                          <NavItem icon={ZapIcon} label={t.converter} isActive={activePage === 'upload'} isCollapsed={collapsed} onClick={() => setActivePage('upload')} />
-                         <NavItem icon={StreamIcon} label="Upload" isActive={activePage === 'upload'} isCollapsed={collapsed} onClick={() => setActivePage('upload')} />
                          <NavItem icon={ImageIcon} label="Image Extractor" isActive={activePage === 'extract'} isCollapsed={collapsed} onClick={() => setActivePage('extract')} />
                      </div>
                  </div>

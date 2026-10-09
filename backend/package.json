@@ -5,7 +5,7 @@
   "description": "Production-grade document conversion backend using LibreOffice headless + BullMQ",
   "main": "dist/index.api.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-migrations.mjs",
     "dev:api": "tsx watch src/index.api.ts",
     "dev:worker": "tsx watch src/index.worker.ts",
     "start:api": "node dist/index.api.js",

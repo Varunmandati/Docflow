@@ -8,7 +8,6 @@ import { healthRoutes } from './routes/health.routes.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { configRoutes } from './routes/config.routes.js';
 import { aiRoutes } from './routes/ai.routes.js';
-import { uploadProxyRoutes } from './routes/uploads.routes.js';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // Setup rate limiting
@@ -22,7 +21,6 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     await app.register(authRoutes);
     await app.register(configRoutes, { prefix: '/v1/config' });
     await app.register(aiRoutes);
-    await app.register(uploadProxyRoutes);
 
     // Global Error Handler
     app.setErrorHandler((error, request, reply) => {

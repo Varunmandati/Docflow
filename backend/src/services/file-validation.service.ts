@@ -9,9 +9,9 @@ interface FileValidationResult {
 }
 
 // Allowed MIME types for document conversion and image processing.
-// NOTE: browsers often report `.upload` drag-and-drop uploads as
-// `application/octet-stream`, so a generic octet-stream is always accepted
-// here — the per-extension magic/signature check still rejects bogus bytes.
+// NOTE: browsers sometimes report uploads as `application/octet-stream`, so a
+// generic octet-stream is always accepted here — the per-extension
+// magic/signature check still rejects bogus bytes.
 const ALLOWED_MIME_TYPES = new Set([
     'application/octet-stream',
     'application/msword',
@@ -27,8 +27,6 @@ const ALLOWED_MIME_TYPES = new Set([
     'text/plain',
     'application/pdf',
     'application/x-pdf',
-    'application/x-upload',
-    'application/x-binary-transfer',
     // Image MIME types
     'image/jpeg',
     'image/jpg',
@@ -89,7 +87,6 @@ const FILE_SIGNATURES: Record<string, Buffer[]> = {
     'pptx': [Buffer.from([0x50, 0x4B, 0x03, 0x04])],
     'xlsx': [Buffer.from([0x50, 0x4B, 0x03, 0x04])],
     'rtf': [Buffer.from([0x7B, 0x5C, 0x72, 0x74, 0x66])], // {\rtf
-    'upload': [Buffer.from([0x64])], // 'd' (0x64) - bencoded dictionary start
     'txt': [], // No signature check for text files
     // Image signatures
     'jpg': [Buffer.from([0xFF, 0xD8, 0xFF])], // JPEG
@@ -107,7 +104,7 @@ const FILE_SIGNATURES: Record<string, Buffer[]> = {
 const ALLOWED_EXTENSIONS = new Set([
     '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx',
     '.odt', '.odp', '.ods', '.rtf', '.txt', '.md', '.epub', '.html', '.htm', '.csv', '.tsv',
-    '.pdf', '.upload',
+    '.pdf',
     // Image extensions
     '.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif', '.webp', '.svg', '.heic', '.heif', '.avif', '.ico',
     // Audio extensions
@@ -177,28 +174,6 @@ export async function validateFile(
                         error: `File signature validation failed. Expected text but found binary data.`,
                     };
                 }
-            } else if (extWithoutDot === 'upload') {
-                // file-type cannot detect bencoded .upload files — validate against
-                // the bencoded dictionary signature ('d' 0x64) instead.
-                const buffer = Buffer.alloc(512);
-                const fd = await fs.open(filePath, 'r');
-                const { bytesRead } = await fd.read(buffer, 0, 512, 0);
-                await fd.close();
-
-                // Just check that it starts with 'd' (0x64) - a valid bencoded dictionary.
-                // We cannot strictly check for '8:announce' as many modern uploads use '13:announce-list'
-                // or are DHT-only without trackers.
-                if (bytesRead === 0 || buffer[0] !== 0x64) {
-                    return {
-                        valid: false,
-                        error: `File signature validation failed. Expected a bencoded upload file.`,
-                    };
-                }
-                return {
-                    valid: true,
-                    mimeType: 'application/x-binary-transfer',
-                    extension: ext,
-                };
             }
         } else {
             // Check if the detected extension matches the declared one (or is loosely compatible)
@@ -221,7 +196,6 @@ export async function validateFile(
                 'doc': ['doc', 'cfb'], // file-type detects older MS Office files as cfb
                 'xls': ['xls', 'cfb'],
                 'ppt': ['ppt', 'cfb'],
-                'upload': ['upload'],
                 'm4a': ['m4a', 'mp4'],
                 'mp4': ['mp4', 'm4a', 'mov'],
                 'mov': ['mov', 'mp4', 'qt'],
@@ -307,11 +281,6 @@ export async function detectFileType(filePath: string): Promise<string> {
         // RTF
         if (buffer.subarray(0, 5).equals(Buffer.from([0x7B, 0x5C, 0x72, 0x74, 0x66]))) {
             return 'rtf';
-        }
-
-        // Upload (bencoded - starts with 'd')
-        if (buffer.subarray(0, 1).equals(Buffer.from([0x64]))) {
-            return 'upload';
         }
 
         // Plain text (check for null bytes)

@@ -1,8 +1,10 @@
 import { logger } from './config/logger.js';
+import { env, ensureStorageRootLayout } from './config/env.js';
 import { ensureStorageLayout } from './services/storage.service.js';
 import { startConversionWorker } from './workers/conversion.worker.js';
 import { startCompressionWorker } from './workers/compression.worker.js';
 import { startCleanupWorker } from './workers/cleanup.worker.js';
+import { startWorkerHeartbeat, clearWorkerHeartbeat } from './workers/heartbeat.js';
 import { closeDatabaseConnections, withApiClient } from './db/client.js';
 import { redis } from './queue/connection.js';
 
@@ -12,6 +14,10 @@ async function shutdown(signal: string) {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Shutting down worker process');
+    // Drop the heartbeat first so /v1/health reports the worker as stale while
+    // it is draining, rather than continuing to advertise a live worker for the
+    // whole graceful-shutdown window.
+    await clearWorkerHeartbeat();
     try {
         await Promise.all([closeDatabaseConnections(), redis.quit()]);
     } catch (err) {
@@ -24,7 +30,14 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 async function startWorker() {
+    // Fail fast on a missing or unwritable STORAGE_ROOT. Without this the
+    // worker happily starts and fails every job later with an ENOENT that looks
+    // like a converter bug.
+    ensureStorageRootLayout();
     await ensureStorageLayout();
+
+    startWorkerHeartbeat();
+
     startConversionWorker();
     startCompressionWorker();
     // Expired-artifact reclamation must run in the dedicated worker process
@@ -46,7 +59,14 @@ async function startWorker() {
         }
     }, 60 * 60 * 1000); // 1 hour
 
-    logger.info('Conversion and compression workers started');
+    logger.info(
+        {
+            storageRoot: env.STORAGE_ROOT,
+            workerConcurrency: env.WORKER_CONCURRENCY,
+            heavyJobConcurrency: env.HEAVY_JOB_CONCURRENCY ?? 'unlimited',
+        },
+        'Conversion and compression workers started'
+    );
 }
 
 startWorker().catch((error) => {

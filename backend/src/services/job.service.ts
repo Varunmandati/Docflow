@@ -4,7 +4,7 @@ export interface CreateJobInput {
   id?: string;               // explicit DB job id (== BullMQ job id when provided)
   userId?: string;           // Firebase UID — null for anonymous jobs
   bullmqJobId?: string;
-  jobType: 'conversion' | 'compression' | 'upload';
+  jobType: 'conversion' | 'compression';
   inputFilename: string;
   inputSizeBytes?: number;
   inputFormat?: string;

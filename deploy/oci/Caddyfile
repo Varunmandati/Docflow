@@ -1,0 +1,154 @@
+# =============================================================================
+# DocFlow - Caddy (Oracle A1 deployment)
+#
+# The only service that binds a public port. Everything else lives on the
+# internal `backend` network with no published ports at all.
+#
+# Topology:
+#
+#   :80  ->  HTTP -> automatic redirect to :443 (Caddy, automatically)
+#   :443 ->  TLS  -> same-origin reverse proxy
+#                        /api/*, /v1/*, /health  ->  api:8080
+#                        everything else         ->  api:8080 (static SPA)
+#
+# Certificate issuance is automatic. A1 instances need an inbound 443 open in
+# the VCN security list and 80 open for the ACME challenge; both are handled by
+# setup.sh.
+#
+# Note on port 80: there is deliberately no explicit `:80` site block here.
+# Defining one (a hand-rolled challenge webroot plus a `redir`) competes with
+# Caddy's own ACME handling, which already serves the HTTP-01 challenge ahead of
+# the redirect for the domain in this file. Since nothing ever writes challenge
+# files into that webroot - Caddy answers them from its in-memory ACME server -
+# the hand-rolled block could only break renewal, and would break it silently,
+# about 60 days after first deploy. Letting Caddy own :80 gives the redirect and
+# the challenge from the same supported code path.
+# =============================================================================
+{
+	# Email for the ACME account and expiry notices. Caddy will use it to warn
+	# before a certificate lapses. Set this in the environment, not here.
+	email {$ACME_EMAIL}
+
+	# Uncomment to serve internal hostnames over the local CA (for testing a
+	# private domain before public DNS resolves). Not needed for a public domain.
+	# local_certs
+}
+
+# Upstream connection policy, shared by both reverse_proxy blocks below.
+#
+# Defined before the site that imports it: Caddy resolves `import` in file
+# order, so a snippet declared after its use is a "file to import not found"
+# error and Caddy refuses to start.
+#
+# `transport` is a subdirective of `reverse_proxy`, not a site-level directive -
+# declaring it at the site level is an "unrecognized directive" error. Hence the
+# snippet.
+#
+# Conversion jobs and large uploads are long-lived. Caddy's default
+# read/write timeouts would sever a multi-gigabyte download mid-stream, so those
+# two are disabled and liveness is bounded by `dial_timeout` and
+# `response_header_timeout` instead. The 120s header window is generous on
+# purpose: a slow conversion can sit for a while before the API answers, and the
+# API's own upstream timer is what should end that, not the proxy in front of it.
+(upstream_transport) {
+	transport http {
+		dial_timeout 10s
+		response_header_timeout 120s
+		read_timeout 0
+		write_timeout 0
+		keepalive 60s
+		keepalive_idle_conns 32
+	}
+}
+
+{$DOCFLOW_DOMAIN} {
+	encode zstd gzip
+
+	# Security headers.
+	#
+	# The API already sets these via helmet for its own responses. They are
+	# repeated here so that static SPA assets served straight off disk by the API
+	# (and any future Caddy-handled path) are covered identically. The
+	# API's helmet policy is the authoritative one and includes the CDN origins
+	# the SPA genuinely needs, so Caddy's copy deliberately does not set
+	# Content-Security-Policy - duplicating it here without the same allowlist
+	# would break the app.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Document conversion uploads can be hundreds of megabytes and are proxied
+	# through to the API, so the default 10MB request body limit would reject
+	# every real file. Caddy itself does not read the body (it streams), but the
+	# timeout does apply to a slow client.
+	request_body {
+		max_size 512MB
+	}
+
+	# Access log.
+	#
+	# This used to be a plain `format json` with a comment claiming it kept
+	# credentials out of the logs. That was wrong: Caddy's default JSON access
+	# log records the full request header set and the complete request URI
+	# including its query string. Since /api/* carries a Firebase ID token in the
+	# Authorization header, and download-by-token style endpoints put credentials
+	# in the query, an unfiltered log on a long-lived A1 instance is a standing
+	# credential-at-rest problem - readable by anyone who can `docker logs`.
+	#
+	# The `filter` encoder deletes the sensitive headers and rewrites the query
+	# string, keeping the method/host/status/duration that make the log useful.
+	log {
+		output stdout
+		level INFO
+		format filter {
+			wrap json
+			fields {
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+				request>headers>Set-Cookie delete
+				request>headers>Proxy-Authorization delete
+				request>headers>X-Internal-Token delete
+				request>headers>X-Docflow-User-Id delete
+				request>headers>X-Firebase-Token delete
+				# Keep the path, blank the query string wholesale. Enumerating
+				# individual query parameters is a losing game: a new
+				# token-in-query endpoint would silently start logging secrets.
+				request>uri query {
+					delete *
+				}
+			}
+		}
+	}
+
+	# API routes. Streaming responses are expected, so buffering must
+	# stay off; Caddy streams by default and this only makes the intent explicit.
+	@api path /api/* /v1/* /health
+	handle @api {
+		reverse_proxy api:8080 {
+			# The API is the only upstream behind Caddy, so X-Real-IP is
+			# filled in here rather than trusting whatever the browser sent
+			# (Caddy overwrites X-Forwarded-For).
+			#
+			# X-Forwarded-Proto / -Host / -For are deliberately NOT set here:
+			# reverse_proxy already populates them, and re-declaring them is
+			# logged by `caddy validate` as unnecessary. The API's rate limiter
+			# trusts exactly one hop (Caddy -> api), which matches
+			# TRUST_PROXY=1 in docker-compose.yml.
+			header_up X-Real-IP {remote_host}
+			import upstream_transport
+		}
+	}
+
+	# Everything else is the SPA. The API serves the built assets, so this is a
+	# plain reverse proxy too - there is no separate static file server to keep in
+	# sync with the bundle.
+	handle {
+		reverse_proxy api:8080 {
+			header_up X-Real-IP {remote_host}
+			import upstream_transport
+		}
+	}
+}

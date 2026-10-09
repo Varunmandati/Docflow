@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { ConverterEngine, EngineConversionResult, EngineOptions } from './ConverterEngine.js';
 import { SandboxRunner } from '../../utils/sandboxRunner.js';
 import { executeCommand } from '../command.service.js';
+import { fixDocxAnchorOrigins } from '../docx-postprocess.service.js';
 import { logger } from '../../config/logger.js';
 import { env } from '../../config/env.js';
 
@@ -34,6 +35,27 @@ function toFileUri(p: string): string {
 }
 
 /**
+ * Child environment for the pdf2docx interpreter.
+ *
+ * SandboxRunner strips the environment down to PATH + HOME, which on Windows
+ * hides APPDATA — so Python can't find its user site-packages (where
+ * `pip install --user pdf2docx` lands) and has no temp directory. Re-adding the
+ * non-secret path variables makes `import pdf2docx` work inside the sandbox
+ * without leaking credentials; on Linux these keys are absent and the env stays
+ * exactly as SandboxRunner builds it today.
+ */
+function pythonChildEnv(): Record<string, string> {
+    const childEnv: Record<string, string> = {};
+    if (process.env.PATH) childEnv['PATH'] = process.env.PATH;
+    childEnv['HOME'] = process.env.HOME || '/tmp';
+    for (const key of ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP']) {
+        const value = process.env[key];
+        if (value) childEnv[key] = value;
+    }
+    return childEnv;
+}
+
+/**
  * PdfToDocxEngine — primary PDF → DOCX conversion engine (Phase 1).
  *
  * Strategy:
@@ -48,6 +70,9 @@ function toFileUri(p: string): string {
  */
 export class PdfToDocxEngine implements ConverterEngine {
     name = 'PdfToDocx';
+
+    /** Cached result of resolvePythonBin() — probing per job would be wasted work. */
+    private resolvedPythonBin: string | null = null;
 
     canHandle(sourceFormat: string, targetFormat: string): boolean {
         return sourceFormat === 'pdf' && targetFormat === 'docx';
@@ -133,6 +158,16 @@ export class PdfToDocxEngine implements ConverterEngine {
                         throw new Error('Both pdf2docx and LibreOffice fallback produced no output: scanned PDF has no text layer and OCR is disabled (PDF_DOCX_OCR=off)');
                     }
                     throw new Error('Both pdf2docx and LibreOffice fallback produced no output');
+                }
+
+                // LibreOffice labels page-relative shape offsets as column- and
+                // paragraph-relative, which shifts every page by the section
+                // margin (~1 cm on the left/top). Fix the anchors, but never
+                // fail a conversion that already produced a file.
+                try {
+                    await fixDocxAnchorOrigins(expectedOutput);
+                } catch (err) {
+                    logger.warn({ err, expectedOutput }, 'PdfToDocxEngine: DOCX anchor position fix skipped');
                 }
             }
 
@@ -251,14 +286,58 @@ export class PdfToDocxEngine implements ConverterEngine {
             throw new Error(`pdf2docx converter script not found in [${candidates.join(', ')}]`);
         }
 
-        await SandboxRunner.execute(PYTHON_BIN, [
+        const pythonBin = await this.resolvePythonBin();
+
+        await SandboxRunner.execute(pythonBin, [
             scriptPath,
             inputPath,
             outputPath,
         ], {
             timeoutMs: PDF_DOCX_TIMEOUT_MS,
             maxBuffer: 50 * 1024 * 1024,
+            env: pythonChildEnv(),
         });
+    }
+
+    /**
+     * Pick an interpreter that can actually import pdf2docx.
+     *
+     * Probes `PDF_DOCX_PYTHON`, then `python3`, then `python` — on Windows the
+     * only interpreter on PATH is often a plain `python`, while Linux images set
+     * `PDF_DOCX_PYTHON=/opt/pdf2docx-venv/bin/python3`. The first interpreter
+     * that imports the library wins and is cached for the worker's lifetime; if
+     * none can, the configured/default binary is still returned so the
+     * conversion attempt runs and falls back to LibreOffice exactly as before.
+     */
+    private async resolvePythonBin(): Promise<string> {
+        if (this.resolvedPythonBin) return this.resolvedPythonBin;
+
+        const configured = process.env.PDF_DOCX_PYTHON;
+        const candidates = [...new Set(
+            [configured, 'python3', 'python'].filter((c): c is string => Boolean(c))
+        )];
+
+        for (const bin of candidates) {
+            try {
+                const probe = await executeCommand(
+                    bin,
+                    ['-c', 'import pdf2docx; print("PDF2DOCX_OK")'],
+                    30000,
+                );
+                if (probe.code === 0 && (probe.stdout || '').includes('PDF2DOCX_OK')) {
+                    this.resolvedPythonBin = bin;
+                    if (bin !== PYTHON_BIN) {
+                        logger.info({ pythonBin: bin }, 'PdfToDocxEngine: interpreter with pdf2docx found');
+                    }
+                    return bin;
+                }
+            } catch {
+                // Probe timed out or was killed — try the next candidate.
+            }
+        }
+
+        this.resolvedPythonBin = PYTHON_BIN;
+        return this.resolvedPythonBin;
     }
 
     /**
@@ -316,7 +395,7 @@ export class PdfToDocxEngine implements ConverterEngine {
         let docxText = '';
         try {
             const result = await executeCommand(
-                PYTHON_BIN,
+                await this.resolvePythonBin(),
                 ['-c', `
 import zipfile, sys, re
 with zipfile.ZipFile(sys.argv[1]) as z:

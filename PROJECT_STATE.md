@@ -1,6 +1,6 @@
 # DocFlow - Current Project State & Future Opportunities
 
-DocFlow is a robust, full-stack document processing and conversion suite. It handles a wide variety of file operations (conversion, compression, image manipulation, uploading) securely and concurrently using a modern job-queue architecture.
+DocFlow is a robust, full-stack document processing and conversion suite. It handles a wide variety of file operations (conversion, compression, image manipulation) securely and concurrently using a modern job-queue architecture.
 
 ## 🏗 Current Architecture & Implemented Features
 
@@ -33,7 +33,6 @@ DocFlow is a robust, full-stack document processing and conversion suite. It han
 ### 5. Feature-Rich Frontend Views
 - **Dashboard**: Quick conversion stats and unified file drops.
 - **Compressor & Converter Views**: Tailored UX per conversion type showing live progress status indicators synced via Fastify.
-- **Upload Downloader**: Secure backend proxy (`uploads.routes.ts`) masking an internal `stream-service` upload client, preventing user exposure while allowing highly reliable streaming downloads.
 - **Image Extractor & Page Manager**: Client-side parsing capability to rip images rapidly out of arrays of documents.
 
 ---
@@ -44,7 +43,7 @@ Below are several avenues to expand and improve the platform further:
 
 ### 1. AI & Intelligent Document Processing
 - **Document Summarization**: Add an endpoint utilizing the existing AI route pattern (currently handling Gemini filename suggestion) to summarize long PDFs or Word documents automatically.
-- **Document Q&A / Chat**: Allow users to query the AI about the contents of their uploaded research papers or uploaded books.
+- **Document Q&A / Chat**: Allow users to query the AI about the contents of their uploaded research papers or books.
 - **Optical Character Recognition (OCR)**: Integrate Tesseract.js or Cloud Vision APIs to extract raw text from image-only / scanned PDFs.
 
 ### 2. Advanced Output Manipulation
@@ -65,4 +64,4 @@ Below are several avenues to expand and improve the platform further:
 
 ### 6. Notifications
 - Integrate WebSocket or SSE (Server-Sent Events) in the backend to push real-time conversion job updates to the frontend instead of relying purely on interval polling.
-- Web Push notifications or email alerts when large/long conversions (like Uploads or Video re-encoding) finally finish.
+- Web Push notifications or email alerts when large/long conversions (like Video re-encoding) finally finish.

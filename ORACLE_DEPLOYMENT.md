@@ -1,9 +1,9 @@
 # DocFlow on Oracle Cloud — Always Free VM (24/7, $0/month)
 
 A single Ubuntu VM runs everything: the React SPA, the Fastify API with
-inline queue workers, StreamService (WebClient) and the LibreOffice/pdf2docx
-conversion stack — from the root `Dockerfile` via `docker-compose.yml`.
-Nothing sleeps, so upload downloads and conversion jobs keep running.
+inline queue workers and the LibreOffice/pdf2docx conversion stack — from the
+root `Dockerfile` via `docker-compose.yml`. Nothing sleeps, so conversion jobs
+keep running.
 
 | | |
 |---|---|
@@ -59,7 +59,6 @@ Default Security List → Add ingress rules**:
 | Type | Destination port | Source | Purpose |
 |---|---|---|---|
 | TCP | `8080` | `0.0.0.0/0` | the app |
-| TCP + UDP | `6881`–`6891` | `0.0.0.0/0` | optional — inbound BinaryTransfer peers (outbound uploads work without it) |
 
 SSH (`22`) is already open.
 
@@ -92,8 +91,7 @@ Source of truth: [`.env.production.example`](.env.production.example).
 | 6 · Auth | `FIREBASE_SERVICE_ACCOUNT` (single-line JSON) |
 | 7 · Frontend | all six `VITE_FIREBASE_*` values — public browser identifiers |
 
-Keep `VITE_API_BASE_URL` and `VITE_UPLOAD_SERVER_URL` **empty**: SPA and API
-share one origin.
+Keep `VITE_API_BASE_URL` **empty**: SPA and API share one origin.
 
 > `VITE_*` values are baked in at **build** time. After changing them,
 > re-run `sudo bash deploy/oracle/setup.sh` (it rebuilds), not just a restart.
@@ -113,7 +111,6 @@ Then open `http://<public-ip>:8080`:
 - [ ] SPA loads (deep links like `/login` work — Fastify serves `index.html`)
 - [ ] OTP email arrives (Resend)
 - [ ] a Word/PDF/image converts and downloads
-- [ ] adding a upload streams (and `/api/uploads` answers, not `502`)
 
 ---
 
@@ -130,8 +127,7 @@ docker compose down                # stop
 
 `restart: unless-stopped` keeps the stack up across VM reboots.
 
-**If the VM is tight on memory** (it shouldn't be at 12 GB): set
-`STREAM_ENABLED=false` in `.env` to drop StreamService, or raise
+**If conversions feel slow under load**, raise
 `NODE_OPTIONS=--max-old-space-size=768` for faster conversions.
 
 ---
@@ -173,7 +169,6 @@ It prints a temporary `https://…trycloudflare.com` URL.
 | Port 8080 unreachable from outside | missing ingress rule in the Default Security List (§3) |
 | Container restarts / unhealthy | `docker compose logs --tail=200` — usually a bad `DATABASE_URL` |
 | Builds run out of memory | raise the shape to 2 OCPU/12 GB (§2); `npm ci` needs the headroom |
-| Uploads show no peers | outbound works regardless; open `6881-6891` for inbound peers |
 | Oracle says out of capacity | different AD, or a different home region |
 
 **Sign-up or capacity failed?** Alternatives with a card:

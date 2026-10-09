@@ -2,13 +2,11 @@
 # DocFlow - one image, the whole product.
 #
 #   frontend   : builds the React SPA (Fastify serves it from ./dist)
-#   stream-service  : builds StreamService, the WebClient server behind /api/uploads
 #   backend    : builds the Fastify API + queue workers
-#   runtime    : LibreOffice / FFmpeg / pdf2docx + all three artifacts
+#   runtime    : LibreOffice / FFmpeg / pdf2docx + all artifacts
 #
-# Keeping SPA, API and uploads in one container is what makes a single
-# free-tier host sufficient: the API reverse-proxies StreamService over
-# 127.0.0.1 and serves the SPA itself, so only one port is ever exposed.
+# Keeping SPA and API in one container is what makes a single free-tier host
+# sufficient: the API serves the SPA itself, so only one port is ever exposed.
 # =============================================================================
 
 # --- Stage 1: frontend -------------------------------------------------------
@@ -33,7 +31,6 @@ ARG VITE_FIREBASE_MESSAGING_SENDER_ID
 ARG VITE_FIREBASE_APP_ID
 ARG VITE_FIREBASE_MEASUREMENT_ID
 ARG VITE_API_BASE_URL
-ARG VITE_UPLOAD_SERVER_URL
 ENV VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY} \
     VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN} \
     VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID} \
@@ -41,39 +38,11 @@ ENV VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY} \
     VITE_FIREBASE_MESSAGING_SENDER_ID=${VITE_FIREBASE_MESSAGING_SENDER_ID} \
     VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID} \
     VITE_FIREBASE_MEASUREMENT_ID=${VITE_FIREBASE_MEASUREMENT_ID} \
-    VITE_API_BASE_URL=${VITE_API_BASE_URL} \
-    VITE_UPLOAD_SERVER_URL=${VITE_UPLOAD_SERVER_URL}
+    VITE_API_BASE_URL=${VITE_API_BASE_URL}
 
 RUN npm run build
 
-# --- Stage 2: StreamService ------------------------------------------------------
-FROM node:20-bookworm AS stream-service
-WORKDIR /app/stream-service
-
-COPY stream-service/package*.json ./
-RUN npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-maxtimeout=120000
-COPY stream-service/ ./
-
-# `npm run build` = vite build (StreamService UI into dist/) + esbuild bundle of
-# server.ts -> dist/server.js. The bundle keeps --packages=external, so the
-# production node_modules travel to the runtime stage as well.
-#
-# server.ts only imports express, web-client, dotenv and ./speed (Vite is
-# imported lazily, dev-only), and the UI is fully bundled into dist/ by vite -
-# so every UI/build-only package is deleted afterwards. The alternative would
-# be shipping ~150MB of node_modules that the container never loads.
-RUN npm run build && npm prune --omit=dev && \
-    rm -rf \
-      node_modules/vite node_modules/esbuild node_modules/@esbuild \
-      node_modules/rollup node_modules/postcss node_modules/nanoid \
-      node_modules/picocolors node_modules/source-map-js \
-      node_modules/lightningcss-linux-x64-gnu node_modules/lightningcss-linux-x64-musl \
-      node_modules/lucide-react node_modules/react node_modules/react-dom \
-      node_modules/motion node_modules/@google node_modules/@babel \
-      node_modules/@vitejs node_modules/@tailwindcss node_modules/tailwindcss \
-      node_modules/autoprefixer node_modules/tsx node_modules/@types
-
-# --- Stage 3: backend -------------------------------------------------------
+# --- Stage 2: backend -------------------------------------------------------
 FROM node:20-bookworm AS backend
 WORKDIR /app
 
@@ -85,7 +54,7 @@ COPY backend ./backend
 # again in the runtime stage would add a second full copy of node_modules.
 RUN cd backend && npm run build && npm prune --omit=dev
 
-# --- Stage 4: runtime -------------------------------------------------------
+# --- Stage 3: runtime -------------------------------------------------------
 FROM node:20-bookworm-slim
 WORKDIR /app
 
@@ -123,13 +92,6 @@ COPY --chown=node:node --from=backend /app/backend ./backend
 # Built SPA - served by Fastify from path.resolve(cwd(), 'dist')
 COPY --chown=node:node --from=frontend /app/dist ./dist
 
-# StreamService: only the artifacts (package.json keeps Node in ESM mode for
-# dist/server.js). Source and any local .env stay out of the image on purpose -
-# the container is configured purely through environment variables.
-COPY --chown=node:node --from=stream-service /app/stream-service/package.json ./stream-service/package.json
-COPY --chown=node:node --from=stream-service /app/stream-service/dist ./stream-service/dist
-COPY --chown=node:node --from=stream-service /app/stream-service/node_modules ./stream-service/node_modules
-
 # Symlink scripts directory so cwd doesn't matter
 RUN ln -s /app/backend/scripts /app/scripts
 
@@ -137,11 +99,11 @@ RUN ln -s /app/backend/scripts /app/scripts
 COPY --chown=node:node start.sh ./start.sh
 RUN chmod +x ./start.sh
 
-# Writable dirs the processes create at runtime (uploads/jobs, upload cache).
+# Writable dirs the processes create at runtime (uploads/jobs).
 # Only the directories themselves are chowned - their contents do not exist yet,
 # so this stays a tiny layer instead of duplicating /app.
 RUN mkdir -p /app/backend/storage/uploads /app/backend/storage/jobs /app/backend/storage/temp && \
-    chown node:node /app /app/stream-service && \
+    chown node:node /app && \
     chown -R node:node /app/backend/storage
 
 # Switch to unprivileged user

@@ -50,8 +50,25 @@ if (env.EMAIL_TRANSPORT === 'smtp' && env.SMTP_USER && env.SMTP_PASS) {
 }
 
 /**
+ * True when an SMTP failure is worth retrying.
+ *
+ * Gmail intermittently delays the 220 greeting (throttling bursts of
+ * connections from one IP), which surfaces as a connect/greeting timeout.
+ * Those heal on a second attempt; authentication and recipient rejections
+ * never do, so they are not retried.
+ */
+function isTransientSmtpError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = (err as { code?: string } | null)?.code ?? '';
+    if (code === 'EAUTH' || /\b535\b|\b534\b|authentication|Auth/i.test(msg)) return false;
+    return /greeting|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|socket|ECONNECTION|timeout|unexpected socket|stream ended|connection (closed|lost)/i.test(msg);
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
  * Send an email with a hard timeout.
- * If sending hangs (network, DNS, etc.), this rejects after timeoutMs.
+ * If sending hangs (network, DNS, etc.), it rejects after timeoutMs.
  */
 export async function sendMailWithTimeout(
     mailOptions: Mail.Options,
@@ -102,16 +119,30 @@ export async function sendMailWithTimeout(
         ]);
     }
 
-    return Promise.race([
-        transporter.sendMail(mailOptions),
-        new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(
-                `Email send timed out after ${timeoutMs / 1000}s. ` +
-                `This usually means SMTP port 587 is blocked by your firewall/ISP. ` +
-                `Check Windows Firewall settings or try a different network.`
-            )), timeoutMs)
-        ),
-    ]);
+    // SMTP path: one fast retry on transient connect/greeting failures.
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+            return await Promise.race([
+                transporter.sendMail(mailOptions),
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error(
+                        `Email send timed out after ${timeoutMs / 1000}s. ` +
+                        `This usually means SMTP port 587 is blocked by your firewall/ISP. ` +
+                        `Check Windows Firewall settings or try a different network.`
+                    )), timeoutMs);
+                }),
+            ]);
+        } catch (err) {
+            lastError = err;
+            if (attempt === 2 || !isTransientSmtpError(err)) throw err;
+            await sleep(2000);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+    throw lastError;
 }
 
 export { transporter };

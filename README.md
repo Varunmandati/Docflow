@@ -2,7 +2,7 @@
 
 # 📄 DocFlow
 
-### All-in-One Document Processing & Peer-to-Peer (BinaryTransfer) File Delivery Platform
+### All-in-One Document Processing Platform
 
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=white)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -12,7 +12,7 @@
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 
-**Convert documents • Compress files • Transfer files peer-to-peer • Extract images — all from one beautiful UI.**
+**Convert documents • Compress files • Extract images — all from one beautiful UI.**
 
 ---
 
@@ -24,7 +24,6 @@
 |---------|-------------|
 | 📄 **Document Converter** | Convert between DOC, DOCX, PDF, TXT, XLSX, PPTX, and more using LibreOffice headless |
 | 📦 **File Compressor** | Intelligent compression with quality presets and format-specific optimization via Sharp |
-| 📥 **Peer-to-Peer Transfer** | Add `.upload` files for content you own or are licensed to access, browse metadata, select files, and download as ZIP archives |
 | 🖼️ **Image Extractor** | Extract images from PDFs and documents with page-level precision |
 | 📊 **Dashboard** | Real-time statistics, recent activity feed, and conversion history at a glance |
 | 🔐 **Authentication** | Email OTP + Google OAuth via Firebase — secure, passwordless login |
@@ -45,7 +44,6 @@ docflow/
 │   │   ├── DashboardView.tsx      # Stats & activity overview
 │   │   ├── ConverterView.tsx      # Document conversion UI
 │   │   ├── CompressorView.tsx     # File compression UI
-│   │   ├── UploadConverterView.tsx # Upload download manager
 │   │   ├── ImageExtractorView.tsx # PDF image extraction
 │   │   ├── AuthView.tsx           # Login (OTP + Google)
 │   │   ├── ProfileView.tsx        # User profile editor
@@ -62,14 +60,12 @@ docflow/
 │   │   │   └── server.ts         # Fastify server bootstrap
 │   │   ├── services/             # 20 business logic services
 │   │   │   ├── compression.service.ts
-│   │   │   ├── upload.service.ts
 │   │   │   ├── otp-auth.service.ts
 │   │   │   ├── profile.service.ts
 │   │   │   └── ...
 │   │   ├── workers/              # Background job processors
 │   │   │   ├── conversion.worker.ts
 │   │   │   ├── compression.worker.ts
-│   │   │   ├── upload.worker.ts
 │   │   │   └── cleanup.worker.ts
 │   │   ├── db/                   # PostgreSQL integration
 │   │   │   ├── client.ts         # Connection pool (pg)
@@ -82,10 +78,6 @@ docflow/
 │   │   └── types/                # TypeScript type definitions
 │   ├── Dockerfile                # Production container image
 │   └── docker-compose.yml        # Full stack orchestration
-│
-└── 🌊 StreamService (Upload Streaming Service)
-    ├── server.ts                 # WebClient-based streaming server
-    └── src/                      # Client-side upload UI
 ```
 
 ---
@@ -191,14 +183,6 @@ The backend exposes **22+ RESTful endpoints** on port `8080`:
 | `GET` | `/api/jobs/:id/download` | Download converted file |
 | `POST` | `/api/compress` | Upload & compress file |
 
-### Upload
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/upload/parse` | Parse upload metadata |
-| `POST` | `/api/upload/download` | Start upload download |
-| `GET` | `/api/upload/status/:id` | Check download progress |
-| `GET` | `/api/upload/download/:id` | Download completed archive |
-
 ### User Profile
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -210,19 +194,11 @@ The backend exposes **22+ RESTful endpoints** on port `8080`:
 
 ## ⚖️ Lawful use
 
-DocFlow includes a peer-to-peer (BinaryTransfer/WebClient) transfer feature.
-Peer-to-peer is lawful technology — it is how distributions ship Linux ISOs,
-how researchers share open datasets, and how creators share Creative Commons
-work (this repository's own test fixture is *the sample fixture*, CC-BY 3.0).
-
-The software hosts, publishes, and indexes **no content itself**: it is a
-general-purpose tool, and what you ask it to fetch is under your control.
+DocFlow hosts, publishes, and indexes **no content itself**: it is a
+general-purpose document tool, and files you process are under your control.
 You may only use it for material you own, are licensed to access, or that is
-otherwise lawful where you live.
-
-**[Content & Acceptable Use Policy](CONTENT_POLICY.md)** — prohibited uses,
-hosting-provider rules, and abuse/takedown contact. Deployments must follow
-the acceptable-use policy of their hosting provider.
+otherwise lawful where you live. Deployments must follow the acceptable-use
+policy of their hosting provider.
 
 ### License
 
@@ -234,18 +210,17 @@ inquiries.
 
 ## 🚀 Deployment (one container, one port)
 
-One Docker image carries the React SPA, the Fastify API with inline queue
-workers, and StreamService (WebClient), so a single service runs the whole
-product. The API serves the SPA itself and reverse-proxies `/api/uploads` to
-StreamService over `127.0.0.1`, so only port `8080` is ever exposed. The stack is
+One Docker image carries the React SPA and the Fastify API with inline queue
+workers, so a single service runs the whole product. The API serves the SPA
+itself, so only port `8080` is ever exposed. The stack is
 wired up by [`docker-compose.yml`](docker-compose.yml) and configured by
 [`.env.production.example`](.env.production.example).
 
 ### Option A — own VM, always-on, $0/month (recommended)
 
 Oracle Cloud **Always Free** gives an Ubuntu VM (2 OCPU / 12 GB ARM, ~10 TB
-egress per month) that never sleeps — right for upload downloads and
-conversion jobs that must keep running unattended. The card at signup is
+egress per month) that never sleeps — right for conversion jobs that must keep
+running unattended. The card at signup is
 verification only; Always Free resources are never charged.
 
 ```bash
@@ -279,18 +254,12 @@ Details in [KOYEB_DEPLOYMENT.md](KOYEB_DEPLOYMENT.md).
 | `VITE_FIREBASE_API_KEY` … `_APP_ID` (6) | yes | public browser identifiers, inlined into the bundle |
 | `RESEND_API_KEY`, `EMAIL_FROM` | yes | OTP + transactional email over HTTPS |
 | `LOCAL_REDIS=true` | yes | in-container Redis, no external quota |
-| `STREAM_ENABLED` | no | default `true`; set `false` to reclaim ~100 MB if the instance OOMs |
-| `STREAM_INTERNAL_TOKEN` | no | minted at boot when unset, so the upload API is never open |
-| `STREAM_PORT` | no | default `3002`, internal only |
 
 Behaviour worth knowing:
 
 - On a VM the app runs 24/7 (`restart: unless-stopped`); Koyeb free instances
   scale down after about an hour of idle, so the first request after idle is a
   cold start.
-- Inbound BinaryTransfer peer traffic is not reachable from outside the container;
-  outbound connections still work (open TCP/UDP 6881-6891 on the VM to allow
-  inbound peers too).
 - The existing `render.yaml` and `vercel.json` are unchanged — deploying the
   SPA on Vercel and the API elsewhere still works if you want the split: set
   `VITE_API_BASE_URL` to the API URL and `CORS_ORIGIN` to the Vercel URL.
@@ -350,7 +319,6 @@ docker compose down
 - **Zod** — Runtime schema validation
 - **Pino** — Structured JSON logging
 - **LibreOffice (headless)** — Document format conversion
-- **media-parse + legacy-stream** — Upload metadata & downloading
 - **jsonwebtoken** — JWT-based auth tokens
 
 ### DevOps

@@ -6,19 +6,22 @@ const { Pool } = pg;
 // API pool — uses docflow_api role (limited privileges)
 export const apiPool = new Pool({
   connectionString: env.DATABASE_URL,
-  min: parseInt(env.DB_POOL_MIN ?? '2'),
-  max: parseInt(env.DB_POOL_MAX ?? '10'),
-  idleTimeoutMillis: parseInt(env.DB_IDLE_TIMEOUT_MS ?? '30000'),
+  min: env.DB_POOL_MIN,
+  max: env.DB_POOL_MAX,
+  idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,
   connectionTimeoutMillis: 5000,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
 });
 
-// Worker pool — uses docflow_worker role (separate credentials)
+// Worker pool — uses docflow_worker role (separate credentials, BYPASSRLS).
+// Sized from the same knobs as the API pool so a single-VM deployment can be
+// tuned in one place; the worker is the only long-lived consumer of this pool
+// and a single replica only ever needs a couple of connections.
 export const workerPool = new Pool({
   connectionString: env.DATABASE_URL_WORKER,
-  min: 1,
-  max: 5,
-  idleTimeoutMillis: 30000,
+  min: 0,
+  max: Math.max(2, Math.min(env.DB_POOL_MAX, 4)),
+  idleTimeoutMillis: env.DB_IDLE_TIMEOUT_MS,
   connectionTimeoutMillis: 5000,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
 });

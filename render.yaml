@@ -40,8 +40,6 @@ services:
         value: "memory"
       - key: TRUST_PROXY
         value: "true"
-      - key: STREAM_ENABLED
-        value: "false"
       - key: RUN_MIGRATIONS_ON_START
         value: "true"
       - key: ARTIFACT_TTL_MINUTES

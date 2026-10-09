@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../config/logger.js';
+import { env as appEnv } from '../config/env.js';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
@@ -40,7 +41,10 @@ export class SandboxRunner {
      */
     static async execute(command: string, args: string[], options: SandboxOptions = {}): Promise<string> {
         const timeoutMs = options.timeoutMs || 60000;
-        const maxBuffer = options.maxBuffer || 10 * 1024 * 1024; // 10MB
+        // Default to the same cap command.service.ts enforces, so a binary
+        // invoked through either path has the same memory ceiling. A literal
+        // 10MB here would silently disagree with COMMAND_MAX_OUTPUT_BYTES.
+        const maxBuffer = options.maxBuffer || appEnv.COMMAND_MAX_OUTPUT_BYTES;
         const runId = crypto.randomBytes(4).toString('hex');
         
         // Use a restricted environment to avoid leaking host variables to child

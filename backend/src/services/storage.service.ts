@@ -39,8 +39,15 @@ const uploadMetaPath = (fileId: string) => {
 };
 
 export async function ensureStorageLayout(): Promise<void> {
+    // `temp` is written by the upload handler and swept by the cleanup worker,
+    // but was never created here. On a fresh volume the worker silently swept
+    // an empty list and upload created the directory lazily, so a misconfigured
+    // STORAGE_ROOT surfaced hours later instead of at boot. ensureStorageRootLayout()
+    // (config/env.ts) creates all three up front and throws if the volume is
+    // unwritable; this stays as the async entrypoint the workers use.
     await fs.mkdir(uploadsDir, { recursive: true });
     await fs.mkdir(jobsDir, { recursive: true });
+    await fs.mkdir(path.join(env.STORAGE_ROOT, 'temp'), { recursive: true });
 }
 
 export async function saveUpload(fileName: string, mimeType: string, content: Buffer, userId?: string): Promise<UploadedFileMeta> {
@@ -88,7 +95,7 @@ export async function getUploadMetaForUser(fileId: string, userId: string | null
     if (userId) {
         return meta.userId === userId ? meta : null;
     }
-    // Unauthenticated flows (e.g. uploads) only reach anonymous uploads.
+    // Callers without a user id only ever reach anonymous uploads.
     return meta.userId ? null : meta;
 }
 

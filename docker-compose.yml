@@ -5,9 +5,8 @@
 #   docker compose up -d --build
 #
 # One service serves everything: the React SPA, the Fastify API (inline queue
-# workers), StreamService (WebClient) and the LibreOffice/pdf2docx conversion
-# stack. Only PORT 8080 is exposed; StreamService stays on 127.0.0.1 inside the
-# container and is reached through the API's /api/uploads proxy.
+# workers) and the LibreOffice/pdf2docx conversion stack. Only PORT 8080 is
+# exposed.
 # =============================================================================
 services:
   docflow:
@@ -25,7 +24,6 @@ services:
         VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID:-}
         VITE_FIREBASE_MEASUREMENT_ID: ${VITE_FIREBASE_MEASUREMENT_ID:-}
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
-        VITE_UPLOAD_SERVER_URL: ${VITE_UPLOAD_SERVER_URL:-}
     image: docflow:latest
     container_name: docflow
     ports:

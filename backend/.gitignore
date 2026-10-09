@@ -7,6 +7,5 @@ storage/uploads/*
 storage/jobs/*
 storage/temp/*
 !storage/.gitkeep
-*.upload
 test-email-otp.js
 test-smtp-direct.js

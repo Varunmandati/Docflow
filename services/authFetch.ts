@@ -132,5 +132,56 @@ export const authFetch = async (url: string, init: RequestInit = {}): Promise<Re
     return response;
 };
 
+/**
+ * Download a file as a Blob (no streaming).
+ *
+ * The browser fetches the whole file into memory before saving it, so this is
+ * only appropriate for small artefacts - large files must be streamed by the
+ * backend instead.
+ */
+export async function authenticatedDownload(
+    url: string,
+    fallbackFilename = 'download'
+): Promise<void> {
+    const response = await authFetch(url);
 
+    if (!response.ok) {
+        let message = `Download failed (${response.status})`;
+        try {
+            const body = await response.json();
+            if (body?.error) message = String(body.error);
+        } catch { /* ignore */ }
+        throw new Error(message);
+    }
 
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+
+    // RFC 6266: filename*=UTF-8''... is authoritative when present and may be
+    // percent-encoded; filename= is the ASCII fallback.
+    const disposition = response.headers.get('content-disposition') || '';
+    let filename = fallbackFilename;
+    const extended = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition);
+    const basic = /filename\s*=\s*"?([^";]+)"?/i.exec(disposition);
+    const candidate = extended ? decodeURIComponent(extended[1].trim()) : basic?.[1];
+    if (candidate) {
+        // Strip any path component a hostile header might carry, and anything
+        // that would let the name escape the Downloads folder.
+        filename = candidate.split(/[/\\]/).pop() || fallbackFilename;
+    }
+
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.rel = 'noopener';
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    try {
+        anchor.click();
+    } finally {
+        document.body.removeChild(anchor);
+        // Give the browser a tick to start the download before releasing the
+        // blob; revoking synchronously can cancel the save in some browsers.
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    }
+}

@@ -4,7 +4,6 @@ import Sidebar from './components/Sidebar';
 import DashboardView from './components/DashboardView';
 import ConverterView from './components/ConverterView';
 import CompressorView from './components/CompressorView';
-import UploadConverterView from './components/UploadConverterView';
 import ImageExtractorView from './components/ImageExtractorView';
 import HistoryView from './components/HistoryView';
 import SettingsView from './components/SettingsView';
@@ -19,7 +18,7 @@ import { translations } from './translations';
 import { HistoryEntry, ConversionSettings, UserProfile, FontFamily } from './types';
 import { authFetch } from './services/authFetch';
 
-export type Page = 'dashboard' | 'upload' | 'compress' | 'upload' | 'extract' | 'history' | 'settings' | 'profile';
+export type Page = 'dashboard' | 'upload' | 'compress' | 'extract' | 'history' | 'settings' | 'profile';
 export type Theme = 'light' | 'dark' | 'system';
 export type Language = 'en' | 'hi' | 'bn' | 'te';
 
@@ -418,9 +417,6 @@ const App: React.FC = () => {
                                         isAuthenticated={isAuthenticated}
                                         onAuthClick={() => setIsAuthModalOpen(true)}
                                     />
-                                </div>
-                                <div className="page-fade-in" style={{ display: activePage === 'upload' ? 'block' : 'none' }}>
-                                    <UploadConverterView />
                                 </div>
                                 <div className="page-fade-in" style={{ display: activePage === 'extract' ? 'block' : 'none' }}>
                                     <ImageExtractorView />

@@ -99,14 +99,14 @@ CREATE INDEX idx_refresh_tokens_active ON refresh_tokens(token_hash) WHERE revok
 
 -- =============================================================
 -- TABLE: jobs
--- Persistent record of every conversion/compression/upload job.
+-- Persistent record of every conversion/compression job.
 -- Redis stores live progress; this table stores final state.
 -- =============================================================
 CREATE TABLE jobs (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id         UUID REFERENCES users(id) ON DELETE SET NULL,  -- NULL = anonymous job
   bullmq_job_id   VARCHAR(256),                    -- BullMQ job ID for cross-reference
-  job_type        VARCHAR(32) NOT NULL,            -- 'conversion' | 'compression' | 'upload'
+  job_type        VARCHAR(32) NOT NULL,            -- 'conversion' | 'compression'
   status          VARCHAR(32) NOT NULL DEFAULT 'queued',
                   -- 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
   input_filename  VARCHAR(512) NOT NULL,
@@ -115,7 +115,7 @@ CREATE TABLE jobs (
   output_size_bytes BIGINT,
   input_format    VARCHAR(32),                     -- 'pdf' | 'docx' | 'png' etc.
   output_format   VARCHAR(32),
-  conversion_type VARCHAR(64),                     -- e.g. 'docx_to_pdf' | 'image_compress' | 'upload_download'
+  conversion_type VARCHAR(64),                     -- e.g. 'docx_to_pdf' | 'image_compress'
   options_json    JSONB,                           -- job-specific options (quality, DPI, preset, etc.)
   error_message   TEXT,
   progress        SMALLINT CHECK (progress BETWEEN 0 AND 100),

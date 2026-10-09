@@ -28,7 +28,6 @@ Deploying on free infrastructure entails specific operational constraints:
      - `NODE_OPTIONS=--max-old-space-size=192`: Caps V8 heap at 192 MB so native processes have room to execute.
      - `WORKER_CONCURRENCY=1`: Worker picks up 1 job at a time.
      - `HEAVY_JOB_CONCURRENCY=1`: Enforces an in-process semaphore lock so only one heavy engine (LibreOffice, FFmpeg, or pdf2docx) executes at any moment.
-     - `STREAM_ENABLED=false`: Disables the heavy WebClient sidecar.
      - `PDF_DOCX_OCR=off`: Disables CPU- and RAM-heavy OCR scanning on free tier. Scanned PDFs with no text layer fail quickly and informatively rather than causing OOM crashes.
      - `MAX_UPLOAD_BYTES=15728640`: Restricts file uploads to ~15 MB.
 
@@ -109,7 +108,6 @@ Deploying on free infrastructure entails specific operational constraints:
    - `DATABASE_URL_DIRECT=<Your Neon Direct URL>`
    - `RUN_MIGRATIONS_ON_START=true`
    - `TRUST_PROXY=true`
-   - `STREAM_ENABLED=false`
    - `RATE_LIMIT_EXPENSIVE_FALLBACK=memory`
    - `FIREBASE_SERVICE_ACCOUNT=<Minified JSON>`
    - `CORS_ORIGIN=https://<your-vercel-domain>.vercel.app`
@@ -141,5 +139,4 @@ Deploying on free infrastructure entails specific operational constraints:
 - [ ] OTP login email arrives via Resend.
 - [ ] Database migrations execute automatically on boot without errors.
 - [ ] Large document conversion does not crash the 512 MB container.
-- [ ] Upload tab displays graceful unavailable state when `STREAM_ENABLED=false`.
 - [ ] Single-page app navigation on Vercel refreshes without 404 errors.

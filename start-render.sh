@@ -8,11 +8,6 @@ if [ "$LOCAL_REDIS" = "true" ]; then
     sleep 1
 fi
 
-# 2. Sidecar stream-service control
-if [ "$STREAM_ENABLED" = "false" ]; then
-    echo "[start] StreamService disabled (STREAM_ENABLED=false) — launching backend API"
-    exec node backend/dist/index.api.js
-else
-    echo "[start] Launching backend API and StreamService sidecar via concurrently"
-    exec concurrently "node backend/dist/index.api.js" "STREAM_PORT=3002 node stream-service/dist/server.js"
-fi
+# 2. Launch the backend API (also serves the built SPA from ./dist)
+echo "[start] Launching backend API"
+exec node backend/dist/index.api.js

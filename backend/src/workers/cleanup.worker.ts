@@ -49,7 +49,7 @@ export async function cleanupExpiredJobs() {
       try {
         const absolutePath = resolveStoragePath(job.storage_path);
         // Recursively delete the artifact file and the whole `jobs/{jobId}`
-        // workspace (input/, output/, pages/, images/, html/, .upload-tmp).
+        // workspace (input/, output/, pages/, images/, html/).
         // Storage paths look like `jobs/{jobId}/output/<file>`; walk up to the
         // directory named after the job id so the full workspace is reclaimed.
         await fs.rm(absolutePath, { recursive: true, force: true });

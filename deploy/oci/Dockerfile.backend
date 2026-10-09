@@ -1,0 +1,188 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# DocFlow backend images for the Oracle A1 (ARM64) deployment.
+#
+#   target `api`     - HTTP API + static SPA. Deliberately has NO LibreOffice,
+#                      ffmpeg or Python: nothing under backend/src/api imports a
+#                      converter, so the request path never shells out. Keeping
+#                      the toolchain out of this image saves ~1.2 GB of the
+#                      50 GB boot volume.
+#   target `worker`  - the conversion engine. Needs the full toolchain.
+#
+# Both targets share the same Debian base layers and the same compiled
+# node_modules, so on disk they cost roughly one image plus the worker's extra
+# packages rather than two full copies.
+#
+# Base images are multi-arch: node:20-bookworm-slim resolves to linux/arm64 on
+# the A1 shape. Nothing here assumes x86.
+# =============================================================================
+
+ARG NODE_VERSION=20-bookworm-slim
+
+# --- Stage: frontend build --------------------------------------------------
+FROM node:${NODE_VERSION} AS frontend-build
+WORKDIR /app
+
+# Vite inlines VITE_* values into the browser bundle at BUILD time, so they have
+# to be visible here, not at runtime. The production topology is same-origin
+# (Caddy serves the SPA and the API from one public origin), so
+# VITE_API_BASE_URL is intentionally left empty - the browser then calls the API
+# on its own origin, which is what keeps the Firebase token off any cross-site
+# request.
+COPY package*.json ./
+RUN npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-maxtimeout=120000
+
+ARG VITE_FIREBASE_API_KEY
+ARG VITE_FIREBASE_AUTH_DOMAIN
+ARG VITE_FIREBASE_PROJECT_ID
+ARG VITE_FIREBASE_STORAGE_BUCKET
+ARG VITE_FIREBASE_MESSAGING_SENDER_ID
+ARG VITE_FIREBASE_APP_ID
+ARG VITE_FIREBASE_MEASUREMENT_ID
+ENV VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY} \
+    VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN} \
+    VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID} \
+    VITE_FIREBASE_STORAGE_BUCKET=${VITE_FIREBASE_STORAGE_BUCKET} \
+    VITE_FIREBASE_MESSAGING_SENDER_ID=${VITE_FIREBASE_MESSAGING_SENDER_ID} \
+    VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID} \
+    VITE_FIREBASE_MEASUREMENT_ID=${VITE_FIREBASE_MEASUREMENT_ID} \
+    VITE_API_BASE_URL=
+
+# Only the sources the SPA build actually reads. Copying the whole repo would
+# drag backend/ into the layer for no reason.
+#
+# vite.config.ts is NOT optional here even though the SPA does not import it:
+# `npm run build` runs `vite build`, and Vite auto-loads vite.config.ts from its
+# working directory. Without it the build silently falls back to Vite's defaults
+# - no dev proxy, and critically no Tailwind PostCSS plugin, so the bundle
+# would ship with no styles and the failure would only show up in the browser.
+COPY index.html index.css index.tsx App.tsx firebase.ts translations.ts types.ts metadata.json vite.config.ts ./
+COPY components ./components
+COPY services ./services
+COPY hooks ./hooks
+
+# `public/` is intentionally NOT copied: this repo has no such directory, and a
+# `COPY public ./public` against a missing source fails the build outright.
+# Vite's publicDir is optional and is silently skipped when absent. If a
+# public/ directory is ever added (favicon, robots.txt, manifest), add a
+# `COPY public ./public` line here at the same time.
+
+RUN npm run build
+
+# --- Stage: backend compile -------------------------------------------------
+FROM node:${NODE_VERSION} AS backend-build
+WORKDIR /app/backend
+
+COPY backend/package*.json ./
+RUN npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-maxtimeout=120000
+COPY backend/tsconfig.json ./
+COPY backend/src ./src
+# The converters spawn helper scripts resolved through /app/scripts. These live
+# at backend/scripts, outside backend/src, so they are not covered by the
+# `COPY backend/src` above - without this line the /app/scripts symlink created
+# in the runtime stage below points at a directory that does not exist and every
+# helper-spawning conversion fails at exec time.
+COPY backend/scripts ./scripts
+RUN npm run build && npm prune --omit=dev
+
+# --- Stage: shared runtime base ---------------------------------------------
+# The API's minimal dependency set. Also the parent of the worker stage, so the
+# node_modules and backend layers are stored once.
+FROM node:${NODE_VERSION} AS api-runtime
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      poppler-utils \
+      curl \
+      ca-certificates \
+      fonts-liberation \
+      fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
+
+COPY --chown=node:node --from=backend-build /app/backend ./backend
+COPY --chown=node:node --from=frontend-build /app/dist ./dist
+
+# The converters resolve helper scripts through /app/scripts (see the root
+# start.sh), so keep the symlink in both images.
+RUN ln -s /app/backend/scripts /app/scripts
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=8080 \
+    STORAGE_ROOT=/data/docflow/storage \
+    PDF_DOCX_PYTHON=/opt/pdf2docx-venv/bin/python3
+
+EXPOSE 8080
+
+# --- Target: api ------------------------------------------------------------
+FROM api-runtime AS api
+
+# The mount point is created here so the volume inherits the right ownership
+# even on a fresh volume, and so a misconfigured STORAGE_ROOT is caught at boot
+# by env.ts's ensureStorageRootLayout() rather than on the first upload.
+RUN mkdir -p /data/docflow/storage && chown -R node:node /data
+
+USER node
+
+# Cheap liveness only (no DB/Redis/worker), matching what Caddy and
+# `docker compose ps` poll. Readiness is /v1/health.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "backend/dist/index.api.js"]
+
+# --- Target: worker ---------------------------------------------------------
+# The conversion toolchain. This is the image that needs arm64 attention:
+# LibreOffice, ffmpeg, poppler and ghostscript all publish arm64 builds in
+# Debian bookworm, but pdf2docx pulls PyMuPDF/numpy from PyPI, and those wheels
+# are a moving target on aarch64.
+FROM api-runtime AS worker
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libreoffice-writer \
+      libreoffice-calc \
+      libreoffice-impress \
+      ghostscript \
+      ffmpeg \
+      p7zip-full \
+      python3 \
+      python3-venv \
+      fonts-crosextra-carlito \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
+
+# pdf2docx (PDF -> DOCX). Installed best-effort: on aarch64 a missing wheel
+# makes pip attempt a source build, which needs a toolchain we deliberately do
+# not install. Failing the whole image build over one optional converter would
+# take down PDF/DOCX/PPTX and image conversion too, so the failure is recorded
+# in a marker file and pdf.service.ts reports it as a clear per-request error.
+#
+# Structured as separate commands with an explicit `||` on the pip step only.
+# The earlier `A && B && C || { ... }` chain would also swallow a failure of
+# `python3 -m venv` itself, and then the fallback tried to write a marker into a
+# venv directory that had never been created.
+RUN python3 -m venv /opt/pdf2docx-venv
+RUN /opt/pdf2docx-venv/bin/pip install --no-cache-dir --only-binary=:all: pdf2docx \
+      && rm -rf /opt/pdf2docx-venv/lib/python3*/site-packages/pip \
+      && rm -f /opt/pdf2docx-venv/UNAVAILABLE \
+    || { echo "pdf2docx has no binary wheel for this platform" > /opt/pdf2docx-venv/UNAVAILABLE; \
+         echo "WARNING: pdf2docx could not be installed; PDF->DOCX will be unavailable."; }
+
+RUN mkdir -p /data/docflow/storage && chown -R node:node /data
+
+# Workers have no listening port, so a TCP healthcheck is meaningless.
+#
+# `node -e "process.exit(0)"` is not a healthcheck at all: it spawns a second,
+# independent Node process, which stays responsive even when the worker's own
+# event loop is wedged - exactly the failure this is supposed to catch. The
+# worker publishes a Redis heartbeat that the API's /v1/health endpoint reads
+# (see workers/heartbeat.ts), so liveness is asserted where the real signal
+# lives rather than by a check that cannot fail.
+#
+# What is worth checking locally is that the toolchain the worker depends on is
+# actually present in this image, so verify the executables resolve.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD node -e "const{execFileSync}=require('child_process');for(const b of ['soffice','gs','ffmpeg','7z','pdfinfo']){try{execFileSync('which',[b],{stdio:'pipe'})}catch{console.error(b+' missing');process.exit(1)}}process.exit(0)"
+
+USER node
+
+CMD ["node", "backend/dist/index.worker.js"]

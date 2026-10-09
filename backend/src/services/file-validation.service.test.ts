@@ -36,45 +36,11 @@ describe('File Validation Service', () => {
             return filePath;
         };
 
-        it('should accept a valid bencoded .upload file', async () => {
-            // Minimal single-file bencoded upload with an announce key.
-            const bencoded = Buffer.from('d8:announce42:udp://tracker.opentrackr.org:1337/announce4:info4:name4:demo13:piece lengthi262144e6:pieces0:0ee');
-            const filePath = await writeFixture('demo.upload', bencoded);
+        it('rejects .upload files, which are no longer supported', async () => {
+            const filePath = await writeFixture('demo.upload', Buffer.from('d4:infod4:name4:demoee'));
             const result = await validateFile(filePath, 'application/x-binary-transfer', 'demo.upload');
-            expect(result.valid).toBe(true);
-            expect(result.extension).toBe('.upload');
-        });
-
-        it('should accept a real .upload file (sample-fixture fixture)', async () => {
-            // Load an actual bencoded .upload file from disk (not a synthetic
-            // buffer) so we validate against real-world upload bytes.
-            const fixtureDir = path.join(__dirname, '__fixtures__');
-            const fixturePath = path.join(fixtureDir, 'sample-fixture.upload');
-            const realUpload = await fs.readFile(fixturePath);
-
-            // Sanity: the fixture really is bencoded (starts with 'd' 0x64).
-            expect(realUpload[0]).toBe(0x64);
-
-            const filePath = await writeFixture('sample-fixture.upload', realUpload);
-            const result = await validateFile(filePath, 'application/x-binary-transfer', 'sample-fixture.upload');
-            expect(result.valid).toBe(true);
-            expect(result.extension).toBe('.upload');
-            expect(result.mimeType).toBe('application/x-binary-transfer');
-        });
-
-        it('rejects a .upload that is not bencoded', async () => {
-            const filePath = await writeFixture('fake.upload', Buffer.from('this is not a bencoded upload at all!'));
-            const result = await validateFile(filePath, 'application/x-binary-transfer', 'fake.upload');
             expect(result.valid).toBe(false);
-            expect(result.error).toContain('bencoded upload');
-        });
-
-        it('rejects a .upload with a bad declared mime type', async () => {
-            const bencoded = Buffer.from('d8:announce42:udp://tracker.opentrackr.org:1337/announce4:name4:demo1');
-            const filePath = await writeFixture('demo.upload', bencoded);
-            const result = await validateFile(filePath, 'application/json', 'demo.upload');
-            expect(result.valid).toBe(false);
-            expect(result.error).toContain('MIME type not allowed');
+            expect(result.error).toContain('File type not allowed');
         });
     });
 });

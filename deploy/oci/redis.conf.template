@@ -1,0 +1,80 @@
+# =============================================================================
+# Redis configuration template for the Docflow queue broker.
+#
+# Rendered to /run/redis.conf by redis-entrypoint.sh, which substitutes
+# __REDIS_PASSWORD__ and __REDIS_MAXMEMORY__ from the environment. Redis itself
+# does NOT expand environment variables in its config file, so writing
+# `requirepass ${REDIS_PASSWORD}` here would set the password to that literal
+# string and the service would appear to work while being trivially guessable.
+#
+# Redis is a queue, not a database. Everything here is about bounding memory on
+# a small A1 shape and about not losing queued conversion jobs on a restart.
+# =============================================================================
+
+# The API and worker authenticate with this password over the internal network.
+# The value comes from deploy/oci/.env (REDIS_PASSWORD) and must match.
+requirepass __REDIS_PASSWORD__
+
+# Bind only inside the container. The service publishes no ports, so this is
+# belt-and-braces against a future `ports:` entry turning Redis into the
+# internet's most-attacked open port.
+bind 0.0.0.0
+protected-mode yes
+
+# No persistence of the RDB snapshot. AOF below is the durability mechanism;
+# keeping both doubles the write amplification for a queue that is already
+# reconstructible from the database's job rows.
+save ""
+
+# Append-only file. Queued conversion jobs must survive `docker compose restart`;
+# an in-memory-only Redis loses them, and the worker never picks them back up.
+appendonly yes
+appendfsync everysec
+appendfilename "docflow.aof"
+
+# Jobs are small (id + payload), so 16 databases is wasted memory.
+databases 1
+
+# --- Memory bounds -----------------------------------------------------------
+# A hard ceiling with a policy for what happens at the limit. Without maxmemory
+# Redis grows until the kernel OOM-kills it, which takes the worker down with it
+# and loses anything not yet fsynced.
+#
+# Reject writes when full, rather than evicting. Evicting a BullMQ key does not
+# fail loudly - it just silently drops a job whose user is waiting for a
+# download.
+maxmemory __REDIS_MAXMEMORY__
+maxmemory-policy noeviction
+
+# Surface memory pressure in the logs so a rising RSS is visible before it hits
+# the ceiling.
+maxmemory-samples 10
+
+# --- Connection handling -----------------------------------------------------
+# Each container opens a small pool; the cap is generous but present so a runaway
+# reconnect loop cannot exhaust file descriptors.
+maxclients 10000
+timeout 0
+tcp-keepalive 300
+
+# BullMQ blocks on BRPOPLPUSH; keep the connection alive across idle periods so
+# a paused worker is not silently dropped from the queue.
+lazyfree-lazy-eviction no
+lazyfree-lazy-expire no
+lazyfree-lazy-server-del no
+
+# --- Slowlog ----------------------------------------------------------------
+# Anything slower than 10ms in a queue broker is worth knowing about.
+slowlog-log-slower-than 10000
+slowlog-max-len 256
+
+# --- Logging -----------------------------------------------------------------
+# stdout, not a file: `docker compose logs` is the intended access path.
+loglevel notice
+logfile ""
+
+# --- Data structure encoding ------------------------------------------------
+# The queue payload is JSON strings, so compress them. Typically 40-60% smaller
+# on a job-heavy workload.
+rdbcompression yes
+rdbchecksum yes

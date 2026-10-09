@@ -27,16 +27,23 @@ function checkInMemoryFallback(key: string, limit: number, windowSeconds: number
  * the request is allowed through (with a warning) instead of failing with a 500.
  * If RATE_LIMIT_EXPENSIVE_FALLBACK is set to 'memory', expensive endpoints
  * fallback to an in-process memory limiter so heavy endpoints cannot be abused.
+ *
+ * `keySuffix` lets a caller narrow the bucket to a second dimension. For
+ * authenticated routes the limiter uses it to bucket by `<ip>:<uid>` as well as
+ * by IP, so one abusive user behind a shared NAT egress address cannot spend
+ * every other user's budget, and a single account cannot spread an attack
+ * across many source addresses.
  */
 export async function rateLimitMiddleware(
     request: FastifyRequest,
     reply: FastifyReply,
     limit: number = 100,
     windowSeconds: number = 60,
-    isExpensive: boolean = false
+    isExpensive: boolean = false,
+    keySuffix: string = ''
 ) {
     const ip = request.ip || 'unknown';
-    const key = `rate_limit:${ip}`;
+    const key = `rate_limit:${keySuffix ? `${keySuffix}:` : ''}${ip}`;
 
     let current: number;
     try {

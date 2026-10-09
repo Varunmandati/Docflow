@@ -2,7 +2,7 @@
 # Dependencies
 # ========================
 node_modules/
-# NOTE: package-lock.json is deliberately COMMITTED (root, backend/, stream-service/).
+# NOTE: package-lock.json is deliberately COMMITTED (root, backend/).
 # The Dockerfile installs with `npm ci`, which refuses to run without a
 # lockfile - cloud builds (Koyeb, Oracle VM, CI) clone the repo fresh, so
 # ignoring these files would break every out-of-the-machine build.
@@ -29,14 +29,6 @@ backend/storage/uploads/
 backend/storage/jobs/
 backend/storage/temp/
 !backend/storage/.gitkeep
-
-# ========================
-# Upload Data
-# ========================
-.uploads/
-.upload-cache/
-stream-service/.uploads/
-*.upload
 
 # ========================
 # Logs
@@ -77,8 +69,6 @@ test_conversion.py
 poll_job.py
 backend/test-email-otp.js
 backend/test-smtp-direct.js
-stream-service/test-*.js
-stream-service/add-upload.js
 tmp_css_log.txt
 
 # ========================
@@ -108,20 +98,8 @@ QUICK_START_CARD.md
 README_FINAL.md
 START_HERE.md
 TEST_GUIDE.md
-UPLOAD_CODE_CHANGES.md
-UPLOAD_FEATURE.md
-UPLOAD_FEATURE_COMPLETE.md
-UPLOAD_FEATURE_IMPLEMENTATION.md
-UPLOAD_FEATURE_READY.md
-UPLOAD_INTEGRATION_SUMMARY.md
-UPLOAD_MASTER_PROMPT.md
-UPLOAD_QUICK_REFERENCE.md
-UPLOAD_QUICK_START.md
-UPLOAD_SETUP_GUIDE.md
-UPLOAD_STREAMING_GUIDE.md
 UX_REDESIGN_STRATEGY.md
 VISUAL_GUIDE.md
-WEBUPLOAD_IMPLEMENTATION.md
 feedback.md
 
 # ========================
@@ -129,4 +107,6 @@ feedback.md
 # ========================
 *.local
 metadata.json
-stream-service/metadata.json
+# Snapshot produced by an external code-audit tool - a stale duplicate of the
+# real source tree, not part of the app.
+docflow-audit/

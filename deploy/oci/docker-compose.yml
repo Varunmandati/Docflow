@@ -1,0 +1,241 @@
+# =============================================================================
+# DocFlow - Oracle A1 (ARM64) production stack
+#
+#   caddy      the ONLY service with published ports (80, 443)
+#   api        Fastify HTTP API + static SPA          (no published ports)
+#   worker     conversion engine, 1 replica          (no published ports)
+#   redis      BullMQ broker                           (no published ports)
+#
+# Design rules enforced here:
+#   - Nothing but Caddy is reachable from outside the Docker network.
+#   - api and worker share one storage volume, because the API
+#     writes an upload that the worker converts and the user then downloads
+#     from the same path.
+#   - The worker runs exactly once. BullMQ coordination makes a second worker
+#     safe, but a second *LibreOffice* on a small A1 shape is an OOM.
+#   - No `privileged`, no `network_mode: host`, no `pid: host`.
+# =============================================================================
+
+name: docflow
+
+# Explicitly declare the project so a stray `docker compose -p` in CI cannot
+# end up managing the production stack.
+x-docflow-common: &docflow-common
+  restart: unless-stopped
+  # Long enough for a graceful shutdown: in-flight conversion jobs are told to
+  # wind down, not severed.
+  stop_grace_period: 60s
+  # A1 shapes have 1-4 OCPUs. Compose defaults to 1; the worker is the real
+  # consumer, so it gets a modest floor and the API stays lean.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  # --- TLS termination + reverse proxy ---------------------------------------
+  caddy:
+    # Pinned to a minor, not a floating `2-alpine`. The access-log `filter`
+    # encoder used in the Caddyfile to strip Authorization and query strings
+    # only exists from 2.10 onward, so a floating major tag could silently
+    # upgrade to something that no longer applies it - or, on a rollback to an
+    # older image, fail to start at all. Both are worse than a version bump.
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3. Optional; safe to remove.
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required in .env}
+      DOCFLOW_DOMAIN: ${DOCFLOW_DOMAIN:?DOCFLOW_DOMAIN is required in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificates + ACME account
+      - caddy_config:/config
+      # No certbot webroot volume: nothing writes challenge files to disk.
+      # Caddy serves the HTTP-01 challenge from its own ACME server, so a
+      # read-only empty webroot here would only be a place for a misconfigured
+      # challenge to fail silently.
+    networks:
+      - backend
+    healthcheck:
+      # Caddy's own admin endpoint, not the proxied site: a failing upstream
+      # must not make Docker restart the proxy, since that only removes the
+      # error page and adds a connection-refused blip on top.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+
+  # --- HTTP API + static SPA -------------------------------------------------
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/oci/Dockerfile.backend
+      target: api
+    image: docflow/api:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8080"
+      # Service-name addressing, with the Redis password inlined.
+      #
+      # env.ts's default is redis://localhost:6379, which inside this container
+      # is the API itself - the connection would fail in a way that looks like a
+      # Redis outage. REDIS_PASSWORD is the single source of truth (Redis itself
+      # reads it via redis-entrypoint.sh), so the URL is derived from it rather
+      # than configured twice and left to drift. That is only safe because the
+      # password is URL-safe: setup.sh generates hex, and .env.example says so.
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required in .env}@redis:6379
+      # Conversion runs in the worker container, never inline in the API.
+      RUN_INLINE_WORKERS: "false"
+      # Same-origin: Caddy serves the SPA and the API from one public origin, so
+      # no CORS header should be emitted at all.
+      CORS_ORIGIN: ""
+      STORAGE_ROOT: /data/docflow/storage
+      # Caddy is the only proxy in front of us, so exactly one hop is trusted.
+      TRUST_PROXY: "1"
+    volumes:
+      - docflow_storage:/data/docflow/storage
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        # Many concurrent socket connections from the API to Redis.
+        soft: 65535
+        hard: 65535
+
+  # --- Conversion worker ------------------------------------------------------
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/oci/Dockerfile.backend
+      target: worker
+    image: docflow/worker:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      STORAGE_ROOT: /data/docflow/storage
+      RUN_INLINE_WORKERS: "true"   # irrelevant here, but keeps health logic honest
+      TRUST_PROXY: "1"
+      # Same construction as the API's, from the one REDIS_PASSWORD source.
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required in .env}@redis:6379
+      # One LibreOffice process at a time. WORKER_CONCURRENCY controls how many
+      # jobs BullMQ runs in parallel; each one can shell out to soffice, so this
+      # is the number that actually determines peak memory.
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      DB_POOL_MAX: ${WORKER_DB_POOL_MAX:-4}
+    volumes:
+      - docflow_storage:/data/docflow/storage
+    networks:
+      - backend
+    healthcheck:
+      # No port to probe, so this asserts the conversion toolchain is present
+      # rather than that the process is alive. A bare `process.exit(0)` spawns a
+      # second Node process and stays green even when the worker's own event loop
+      # is wedged - the failure it is supposed to catch. Liveness of the worker
+      # itself is the Redis heartbeat that /v1/health reads.
+      test: ["CMD", "node", "-e", "const{execFileSync}=require('child_process');for(const b of ['soffice','gs','ffmpeg','7z','pdfinfo']){try{execFileSync('which',[b],{stdio:'pipe'})}catch{console.error(b+' missing');process.exit(1)}}process.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      # Exactly one. A second worker is not a scaling strategy on this shape.
+      replicas: 1
+      resources:
+        limits:
+          memory: ${WORKER_MEMORY_LIMIT:-3g}
+    security_opt:
+      - no-new-privileges:true
+    # LibreOffice needs a writable HOME and a private profile directory; without
+    # this it races with itself across concurrent jobs and occasionally locks.
+    tmpfs:
+      - /tmp:size=1g
+
+  # --- Redis / BullMQ broker -------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly so queued conversion jobs survive a restart. Without it a
+    # `docker compose restart` silently drops every in-flight job.
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-entrypoint.sh"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required in .env}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-384mb}
+    volumes:
+      - ./redis.conf.template:/usr/local/etc/redis/redis.conf.template:ro
+      - ./redis-entrypoint.sh:/usr/local/bin/redis-entrypoint.sh:ro
+      - docflow_redis:/data
+    networks:
+      - backend
+    healthcheck:
+      # PING through the password, not just "port open": Redis can be listening
+      # while the AOF is still replaying after a crash, and an unauthenticated
+      # PING would succeed on a misconfigured password.
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    # Redis is a cache/queue, never a store of record. Cap the working set so a
+    # job-flood cannot eat the whole A1 shape.
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT:-512m}
+
+networks:
+  # `internal: true` means these containers have no route to the internet at
+  # all. That is deliberate and correct for redis, but the api/worker
+  # services need outbound access (Neon, Resend, Firebase), so the
+  # network is a normal bridge and egress is controlled by leaving no ingress
+  # path open. Do not set internal: true here or every external API call fails.
+  backend:
+    driver: bridge
+
+volumes:
+  docflow_storage:
+  docflow_redis:
+  caddy_data:
+  caddy_config:

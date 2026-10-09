@@ -108,13 +108,7 @@ export async function filesRoutes(app: FastifyInstance) {
             }
 
             // Normalize MIME for uploads browsers report as octet-stream.
-            // Upload files dragged in get `application/octet-stream`; the
-            // upload routes gate on `mimeType.includes('upload')`, so map a
-            // validated .upload upload to a upload MIME here.
-            let storedMimeType = file.mimetype;
-            if (file.filename.toLowerCase().endsWith('.upload')) {
-                storedMimeType = 'application/x-binary-transfer';
-            }
+            const storedMimeType = file.mimetype;
 
             // Move to permanent storage (ownership bound to the current user)
             const meta = await saveUpload(file.filename, storedMimeType, buffer, userId);

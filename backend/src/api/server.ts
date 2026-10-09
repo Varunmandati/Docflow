@@ -18,6 +18,24 @@ export async function buildServer() {
         trustProxy: env.TRUST_PROXY,
     });
 
+    // CORS allowlist, resolved once and shared by the CSP connect-src and the
+    // @fastify/cors registration below.
+    //
+    // The production architecture is same-origin: Caddy terminates TLS and
+    // serves both the SPA (from this process) and the API, so the browser never
+    // makes a cross-origin request and no CORS header is needed at all. The
+    // default is therefore "allow nothing" rather than "*".
+    //
+    // Authentication is via `Authorization: Bearer`, never cookies, so
+    // `credentials` stays false - the classic `Access-Control-Allow-Origin: *`
+    // plus `Allow-Credentials: true` hole does not apply and is not created.
+    // Set CORS_ORIGIN to a comma-separated allowlist only for split-origin
+    // deployments (e.g. local Vite dev server on :3000 talking to :8090).
+    const corsOrigins = env.CORS_ORIGIN
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+
     // Security headers
     await app.register(helmet, {
         global: true,
@@ -26,8 +44,8 @@ export async function buildServer() {
                 defaultSrc: ["'self'"],
                 // This server also serves the built SPA (fastifyStatic below), so
                 // the policy has to permit exactly what index.html already
-                // references. index.html pulls Tailwind, PDF.js, JSZip, jsPDF,
-                // tiff.js and WebClient from CDNs, loads Google Fonts, carries
+                // references. index.html pulls Tailwind, PDF.js, JSZip, jsPDF
+                // and tiff.js from CDNs, loads Google Fonts, carries
                 // two inline <script> blocks (Tailwind runtime config + import
                 // map), and calls Firebase Identity Toolkit for auth. With the
                 // previous 'self'-only policy those were all blocked, so the
@@ -49,7 +67,7 @@ export async function buildServer() {
                 imgSrc: ["'self'", "data:", "blob:", "https:"],
                 mediaSrc: ["'self'", "blob:", "data:"],
                 workerSrc: ["'self'", "blob:", "https://cdnjs.cloudflare.com"],
-                // 'self' covers the API in same-origin (all-in-one container)
+                // 'self' covers the API in same-origin (Caddy + this process)
                 // deployments; the Google endpoints are Firebase Auth token
                 // exchange/refresh; the remaining entries cover a separately
                 // hosted API when CORS_ORIGIN lists its origin.
@@ -60,12 +78,7 @@ export async function buildServer() {
                     "https://firebase.googleapis.com",
                     "https://www.googleapis.com",
                     "https://*.googleapis.com",
-                    ...(env.CORS_ORIGIN === '*'
-                        ? []
-                        : env.CORS_ORIGIN
-                            .split(',')
-                            .map((value) => value.trim())
-                            .filter((value) => value.startsWith('http'))),
+                    ...corsOrigins.filter((value) => value.startsWith('http')),
                 ],
             }
         },
@@ -76,13 +89,10 @@ export async function buildServer() {
         }
     });
 
+    // CORS - see the allowlist resolution above. Empty list means no
+    // Access-Control-Allow-* header is emitted at all.
     await app.register(cors, {
-        // Explicit allowlist from CORS_ORIGIN (comma-separated) when configured.
-        // A reflective wildcard ('*' => true) is safe here only because the API
-        // authenticates via Authorization: Bearer headers, NOT cookies - so the
-        // OPEN-CORS + credentials:true combination the audit flagged is removed
-        // by keeping credentials strictly false.
-        origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((value) => value.trim()).filter(Boolean),
+        origin: corsOrigins.length > 0 ? corsOrigins : false,
         credentials: false,
     });
 
