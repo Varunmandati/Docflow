@@ -1,18 +1,18 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "npm install && npm install --prefix backend",
+  "installCommand": "npm install --include=dev && npm install --include=dev --prefix backend",
   "buildCommand": "npm run build && npm run --prefix backend build",
   "outputDirectory": "dist",
   "functions": {
     "api/*.ts": {
       "maxDuration": 300,
-      "memory": 3072
+      "memory": 2048
     }
   },
   "crons": [
     {
       "path": "/api/cron/cleanup",
-      "schedule": "0 * * * *"
+      "schedule": "0 3 * * *"
     }
   ],
   "rewrites": [
