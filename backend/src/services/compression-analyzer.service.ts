@@ -40,6 +40,11 @@ export async function detectCompressionType(inputPath: string): Promise<Detected
     if (imageExt.has(ext)) return 'image';
     if (!pdfExt.has(ext)) return 'other';
 
+    // Serverless runtimes have no pdftotext. The probe is only an advisory
+    // input for preset *recommendations* (real compression settings come from
+    // the user's choices), so skip the doomed spawn and classify as mixed.
+    if (env.USE_REMOTE_ENGINE) return 'mixed';
+
     try {
         const result = await executeCommand(
             env.PDFTOTEXT_BINARY,

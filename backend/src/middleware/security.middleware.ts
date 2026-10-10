@@ -110,6 +110,14 @@ export function setupRateLimitedRoutes(app: FastifyInstance) {
         }
     });
 
+    // Presigned direct-to-R2 uploads cost a DB insert + a signed URL: same
+    // budget as the classic multipart upload they replace.
+    app.addHook('onRequest', async (request, reply) => {
+        if (matchRoute(request, '/v1/files/presign') && request.method === 'POST') {
+            await rateLimitMiddleware(request, reply, 20, 300, true);
+        }
+    });
+
     // Rate limit compression: 50 per 10 minutes per IP (expensive)
     app.addHook('onRequest', async (request, reply) => {
         if (matchRoute(request, '/v1/compress') && request.method === 'POST') {

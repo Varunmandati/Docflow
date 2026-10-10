@@ -4,6 +4,7 @@ import { jobService } from '../../services/job.service.js';
 import { conversionQueue, compressionQueue } from '../../queue/queues.js';
 import { ConversionResult } from '../../models/types.js';
 import { extractFirebaseUser, verifyFirebaseToken } from '../../middleware/firebase.middleware.js';
+import { env } from '../../config/env.js';
 
 // Ownership guard: a job is only accessible to its owner (or anonymous jobs
 // which are only reachable via their bearer session). Uses RLS-scoped lookup
@@ -70,19 +71,20 @@ export async function jobsRoutes(app: FastifyInstance) {
         const owned = await requireOwnedJob(app, request, reply, params.jobId);
         if (!owned) return reply;
 
-        const [status, conversionJob, compressionJob] = await Promise.all([
-            getJobStatus(params.jobId),
-            conversionQueue.getJob(params.jobId),
-            compressionQueue.getJob(params.jobId),
-        ]);
-
-        const queueJob = conversionJob ?? compressionJob;
+        // BullMQ state is a disk-mode diagnostic; on QStash the queue lives in
+        // a managed service with no per-job lookup, so queueState is omitted
+        // and the DB status below is the single source of truth (it always was
+        // for `status`/`stage`/`progress` — the frontend polls those).
+        const queueJob = env.IS_QSTASH_QUEUE
+            ? null
+            : (await conversionQueue.getJob(params.jobId)) ?? (await compressionQueue.getJob(params.jobId));
+        const status = await getJobStatus(params.jobId);
 
         if (!status && !queueJob) {
             return reply.code(404).send({ message: 'Job not found.' });
         }
 
-        const queueState = queueJob ? await queueJob.getState() : 'unknown';
+        const queueState = queueJob ? await queueJob.getState() : env.IS_QSTASH_QUEUE ? undefined : 'unknown';
 
         return {
             ...status,

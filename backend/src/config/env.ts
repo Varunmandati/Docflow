@@ -69,6 +69,48 @@ const EnvSchema = z.object({
     DATABASE_URL_DIRECT: z.string().url().optional(),
     RUN_MIGRATIONS_ON_START: z.string().default('false'),
 
+    // --- Serverless deployment shape (Vercel) ------------------------------
+    // Defaults preserve the existing Docker/Render/OCI behaviour exactly:
+    // disk storage, BullMQ/Redis queue, local conversion engines.
+    // STORAGE_BACKEND=r2  -> uploads/artifacts live in Cloudflare R2, upload
+    //                       metadata lives in PostgreSQL (uploads table).
+    // QUEUE_BACKEND=qstash-> jobs are published to Upstash QStash instead of
+    //                       BullMQ; processing happens in serverless functions.
+    // CONVERTER_PROVIDER=remote -> pairs that need system binaries are sent to
+    //                       an external conversion API (ConvertAPI-style).
+    STORAGE_BACKEND: z.enum(['disk', 'r2']).default('disk'),
+    QUEUE_BACKEND: z.enum(['bullmq', 'qstash']).default('bullmq'),
+    CONVERTER_PROVIDER: z.enum(['local', 'remote']).default('local'),
+
+    // Cloudflare R2 (S3-compatible). Only required when STORAGE_BACKEND=r2.
+    R2_ACCOUNT_ID: z.string().optional(),
+    R2_ACCESS_KEY_ID: z.string().optional(),
+    R2_SECRET_ACCESS_KEY: z.string().optional(),
+    R2_BUCKET: z.string().optional(),
+    R2_ENDPOINT: z.string().optional(), // derived from ACCOUNT_ID if unset
+
+    // Upstash QStash. Only required when QUEUE_BACKEND=qstash.
+    QSTASH_TOKEN: z.string().optional(),
+    QSTASH_URL: z.string().default('https://qstash.upstash.io/v2/'),
+    // Public base URL of this deployment (e.g. https://docflow.vercel.app) —
+    // QStash delivers job callbacks to QSTASH_TARGET_BASE + /api/jobs/*.
+    QSTASH_TARGET_BASE: z.string().optional(),
+    // JWS signing keys from the QStash console, used to verify callbacks.
+    QSTASH_SIGNING_KEY: z.string().optional(),
+    QSTASH_SIGNING_KEY_NEXT: z.string().optional(),
+
+    // External conversion API (CONVERTER_PROVIDER=remote).
+    CONVERTAPI_SECRET: z.string().optional(),
+    // Second provider: audio, video and 7z pairs. ConvertAPI has no A/V
+    // support and cannot convert between archive formats, so those categories
+    // route to CloudConvert (optional — only needed if those features are
+    // used; missing key surfaces a clear per-job error).
+    CLOUDCONVERT_API_KEY: z.string().optional(),
+    CLOUDCONVERT_BASE_URL: z.string().default('https://api.cloudconvert.com/v2'),
+
+    // Shared secret Vercel Cron sends as `Authorization: Bearer <CRON_SECRET>`.
+    CRON_SECRET: z.string().optional(),
+
     // --- Worker liveness ----------------------------------------------------
     // The worker process heartbeats into Redis on this interval. /v1/health
     // reports the worker as degraded when the heartbeat has gone stale, which
@@ -142,6 +184,33 @@ function assertProductionInvariants(config: typeof parsed): void {
         problems.push('EMAIL_TRANSPORT=resend requires RESEND_API_KEY.');
     }
 
+    if (config.STORAGE_BACKEND === 'r2') {
+        const missing = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET']
+            .filter((key) => !config[key as keyof typeof config]?.toString().trim());
+        if (missing.length > 0) {
+            problems.push(`STORAGE_BACKEND=r2 requires: ${missing.join(', ')}.`);
+        }
+    }
+
+    if (config.QUEUE_BACKEND === 'qstash') {
+        const missing = ['QSTASH_TOKEN', 'QSTASH_TARGET_BASE']
+            .filter((key) => !config[key as keyof typeof config]?.toString().trim());
+        if (missing.length > 0) {
+            problems.push(`QUEUE_BACKEND=qstash requires: ${missing.join(', ')}.`);
+        }
+    }
+
+    if (config.CONVERTER_PROVIDER === 'remote' && !config.CONVERTAPI_SECRET?.trim()) {
+        problems.push('CONVERTER_PROVIDER=remote requires CONVERTAPI_SECRET.');
+    }
+
+    if (config.QUEUE_BACKEND === 'qstash' && config.RUN_INLINE_WORKERS === 'true') {
+        problems.push(
+            'QUEUE_BACKEND=qstash must be combined with RUN_INLINE_WORKERS=false: QStash callbacks are ' +
+            'processed by serverless functions, not by an in-process BullMQ worker.',
+        );
+    }
+
     if (config.DB_POOL_MAX < config.DB_POOL_MIN) {
         problems.push(`DB_POOL_MAX (${config.DB_POOL_MAX}) is below DB_POOL_MIN (${config.DB_POOL_MIN}).`);
     }
@@ -166,6 +235,14 @@ export const env = {
     TRUST_PROXY: parseTrustProxy(parsed.TRUST_PROXY),
     STORAGE_ROOT: path.resolve(process.cwd(), parsed.STORAGE_ROOT),
     WORKER_HEARTBEAT_KEY: 'docflow:worker:heartbeat',
+    // Derived deployment-shape flags, read all over the codebase as
+    // `env.IS_R2_STORAGE` / `env.IS_QSTASH_QUEUE` / `env.USE_REMOTE_ENGINE`.
+    IS_R2_STORAGE: parsed.STORAGE_BACKEND === 'r2',
+    IS_QSTASH_QUEUE: parsed.QUEUE_BACKEND === 'qstash',
+    USE_REMOTE_ENGINE: parsed.CONVERTER_PROVIDER === 'remote',
+    R2_ENDPOINT:
+        parsed.R2_ENDPOINT ||
+        (parsed.R2_ACCOUNT_ID ? `https://${parsed.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : ''),
 };
 
 /**
@@ -175,6 +252,11 @@ export const env = {
  * fails loudly at boot instead of at the first user upload.
  */
 export function ensureStorageRootLayout(): void {
+    // In r2 mode the durable storage is remote; only ephemeral workspaces are
+    // written locally (set STORAGE_ROOT=/tmp/... on read-only serverless
+    // filesystems). Job workspaces create their directories lazily, so skip
+    // the fail-fast layout check rather than crashing on a read-only root.
+    if (env.IS_R2_STORAGE) return;
     const subdirs = ['uploads', 'jobs', 'temp'];
     fs.mkdirSync(env.STORAGE_ROOT, { recursive: true });
     for (const dir of subdirs) {

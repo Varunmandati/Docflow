@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
+import fs from 'node:fs';
 import path from 'node:path';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
@@ -137,14 +138,25 @@ export async function buildServer() {
 
     await registerRoutes(app);
 
-    await app.register(fastifyStatic, {
-        root: path.resolve(process.cwd(), 'dist'),
-        wildcard: true,
-        index: 'index.html',
-    });
+    // Serve the built SPA from this process when it exists. On serverless
+    // (Vercel) the platform serves `dist/` as static files and the function
+    // bundle does not contain it — registering @fastify/static against a
+    // missing root would throw at boot and 500 every request. Skipping the
+    // plugin in that case changes nothing for Docker/Render/OCI deployments,
+    // where dist/ is always present.
+    const staticRoot = path.resolve(process.cwd(), 'dist');
+    const serveStatic = fs.existsSync(path.join(staticRoot, 'index.html'));
+    if (serveStatic) {
+        await app.register(fastifyStatic, {
+            root: staticRoot,
+            wildcard: true,
+            index: 'index.html',
+        });
+    }
 
     app.setNotFoundHandler(async (request, reply) => {
         if (
+            serveStatic &&
             request.method === 'GET' &&
             request.headers.accept?.includes('text/html') &&
             !request.url.startsWith('/api/')

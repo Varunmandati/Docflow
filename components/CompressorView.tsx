@@ -6,6 +6,7 @@ import ProgressBar from './ProgressBar';
 import { CompressorTranslation } from '../translations';
 import { ArrowRightIcon, CheckIcon, CloseIcon, CompressIcon, DownloadIcon, FileIcon, FolderZipIcon, PlusIcon, SpinnerIcon, TrashIcon, UploadIcon } from './Icons';
 import { authFetch } from '../services/authFetch';
+import { uploadWithPresignFallback } from '../services/upload';
 
 declare const JSZip: any;
 
@@ -161,13 +162,11 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
     const backendCompressSingle = async (compressFile: CompressFile, targetTotalBytesForRun: number | null, totalEligibleOriginalSize: number): Promise<{ files: { name: string; url: string; size: number; label: string }[]; originalSize: number; analysis?: CompressionInsight }> => {
         const apiBase = getConversionApiBase();
 
-        const uploadForm = new FormData();
-        uploadForm.append('file', compressFile.file, compressFile.file.name);
-
-        const uploadResponse = await authFetch(buildApiUrl(apiBase, '/v1/files/upload'), {
-            method: 'POST',
-            body: uploadForm,
-        });
+        const uploadResponse = await uploadWithPresignFallback(
+            compressFile.file,
+            buildApiUrl(apiBase, '/v1/files/presign'),
+            buildApiUrl(apiBase, '/v1/files/upload'),
+        );
         if (!uploadResponse.ok) {
             throw new Error(`Upload failed for ${compressFile.file.name}`);
         }

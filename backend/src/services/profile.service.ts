@@ -3,7 +3,7 @@ import { env } from '../config/env.js';
 import { userService } from './user.service.js';
 import { withUserContext, withApiClient } from '../db/client.js';
 import { sendMailWithTimeout } from './email.service.js';
-import { redis } from '../queue/connection.js';
+import { safeRedisDel, safeRedisExpire, safeRedisGet, safeRedisIncr, safeRedisSetex } from '../queue/connection.js';
 import { logger } from '../config/logger.js';
 import { auditService } from './audit.service.js';
 
@@ -53,7 +53,7 @@ export async function ensureUserExists(input: {
     });
     // The user row may have been created or reconciled just now; drop any
     // stale cached profile so callers never see an outdated email/name.
-    await redis.del(`user-profile:${input.uid}`);
+    await safeRedisDel(`user-profile:${input.uid}`);
     return { id: user.id, email: user.email, display_name: user.display_name };
   } catch (err) {
     logger.error({ err }, 'Failed to ensure user exists');
@@ -88,20 +88,26 @@ export async function generateEmailChangeOtp(
     );
   }
 
-  // Redis-backed rate limiting: max 5 requests per new email per 10 minutes
+  // Redis-backed rate limiting: max 5 requests per new email per 10 minutes.
+  // Fail-open: a Redis outage must not block legitimate email changes (these
+  // are authenticated, low-risk writes; the OTP itself is still required).
   const rateKey = `email-change:rl:${normalizedNewEmail}`;
-  const current = await redis.incr(rateKey);
-  if (current === 1) await redis.expire(rateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
-  if (current > RATE_LIMIT_MAX) {
-    throw new Error('Too many email change requests. Please try again in 10 minutes.');
+  const current = await safeRedisIncr(rateKey);
+  if (current !== null) {
+    if (current === 1) await safeRedisExpire(rateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
+    if (current > RATE_LIMIT_MAX) {
+      throw new Error('Too many email change requests. Please try again in 10 minutes.');
+    }
   }
 
   // Per-user rate limit so one account cannot spam OTP emails to many targets.
   const userRateKey = `email-change:user-rl:${userId}`;
-  const userCurrent = await redis.incr(userRateKey);
-  if (userCurrent === 1) await redis.expire(userRateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
-  if (userCurrent > RATE_LIMIT_MAX) {
-    throw new Error('Too many email change requests from this account. Please try again in 10 minutes.');
+  const userCurrent = await safeRedisIncr(userRateKey);
+  if (userCurrent !== null) {
+    if (userCurrent === 1) await safeRedisExpire(userRateKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
+    if (userCurrent > RATE_LIMIT_MAX) {
+      throw new Error('Too many email change requests from this account. Please try again in 10 minutes.');
+    }
   }
 
   // Ensure target email is not already in use
@@ -248,7 +254,7 @@ export async function verifyEmailChangeOtp(
   });
 
   // Invalidate profile cache
-  await redis.del(`user-profile:${userId}`);
+  await safeRedisDel(`user-profile:${userId}`);
 
   auditService.log({
     userId,
@@ -271,18 +277,26 @@ export async function storeProfilePicture(
 ): Promise<{ pictureId: string }> {
   const pictureId = crypto.randomUUID();
   const key = `profile-pic:${userId}:${pictureId}`;
-  await redis.setex(key, ttlSeconds, pictureDataUrl);
+  // Upstash (serverless Redis) rejects values above ~1MB, and the free tier
+  // request cap is lower still. Pointless setex attempts only add error noise,
+  // so skip the cache for oversized payloads on Upstash — local Redis keeps
+  // caching them as before.
+  if (pictureDataUrl.length > 512 * 1024 && /upstash/i.test(env.REDIS_URL)) {
+    logger.warn({ userId, bytes: pictureDataUrl.length }, 'Profile picture too large for Upstash cache — skipped');
+    return { pictureId };
+  }
+  await safeRedisSetex(key, ttlSeconds, pictureDataUrl);
   return { pictureId };
 }
 
 export async function getProfilePicture(userId: string, pictureId: string): Promise<string | null> {
   const key = `profile-pic:${userId}:${pictureId}`;
-  return redis.get(key);
+  return safeRedisGet(key);
 }
 
 export async function deleteProfilePicture(userId: string, pictureId: string): Promise<void> {
   const key = `profile-pic:${userId}:${pictureId}`;
-  await redis.del(key);
+  await safeRedisDel(key);
 }
 
 /**
@@ -319,7 +333,7 @@ export async function updateUserProfile(
     );
   });
 
-  await redis.del(`user-profile:${userId}`);
+  await safeRedisDel(`user-profile:${userId}`);
 }
 
 /**
@@ -332,7 +346,7 @@ export async function getUserProfile(userId: string): Promise<{
   downloadedBytes?: number;
 } | null> {
   const cacheKey = `user-profile:${userId}`;
-  const cached = await redis.get(cacheKey);
+  const cached = await safeRedisGet(cacheKey);
   if (cached) {
     try {
       return JSON.parse(cached);
@@ -349,6 +363,6 @@ export async function getUserProfile(userId: string): Promise<{
     downloadedBytes: Number(dbProfile.storage_used_bytes),
   };
 
-  await redis.setex(cacheKey, 600, JSON.stringify(profile));
+  await safeRedisSetex(cacheKey, 600, JSON.stringify(profile));
   return profile;
 }

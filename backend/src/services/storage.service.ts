@@ -51,10 +51,38 @@ export async function ensureStorageLayout(): Promise<void> {
 }
 
 export async function saveUpload(fileName: string, mimeType: string, content: Buffer, userId?: string): Promise<UploadedFileMeta> {
-    await ensureStorageLayout();
-
     const fileId = randomUUID();
     const storedName = `${fileId}-${safeFileName(fileName)}`;
+
+    // R2 mode (serverless): the bytes go to the bucket and the metadata to
+    // Postgres — the local filesystem only ever holds ephemeral workspaces.
+    if (env.IS_R2_STORAGE) {
+        const r2 = await import('./storage-r2.service.js');
+        const key = `uploads/${storedName}`;
+        await r2.putObjectFromBuffer(key, content, mimeType);
+        await r2.insertPendingUpload({
+            fileId,
+            userId,
+            fileName,
+            mimeType,
+            size: content.length,
+            r2Key: key,
+            status: 'ready',
+        });
+        return {
+            fileId,
+            originalName: fileName,
+            storedName,
+            mimeType,
+            size: content.length,
+            path: r2.keyToR2Uri(key),
+            createdAt: new Date().toISOString(),
+            userId,
+        };
+    }
+
+    await ensureStorageLayout();
+
     const storedPath = path.join(uploadsDir, storedName);
 
     await fs.writeFile(storedPath, content);
@@ -75,6 +103,14 @@ export async function saveUpload(fileName: string, mimeType: string, content: Bu
 }
 
 export async function getUploadMeta(fileId: string): Promise<UploadedFileMeta | null> {
+    if (env.IS_R2_STORAGE) {
+        const r2 = await import('./storage-r2.service.js');
+        const row = await r2.getUploadRow(fileId);
+        // Pending rows are presigned-but-unvalidated uploads: invisible to the
+        // rest of the API until POST /v1/files/:fileId/complete blesses them.
+        if (!row || row.status !== 'ready') return null;
+        return r2.uploadRowToMeta(row);
+    }
     try {
         const raw = await fs.readFile(uploadMetaPath(fileId), 'utf-8');
         return JSON.parse(raw) as UploadedFileMeta;
@@ -137,6 +173,44 @@ export function toRelativeStoragePath(absolutePath: string): string {
     const safeAbsolute = ensureInRoot(absolutePath);
     const relative = path.relative(env.STORAGE_ROOT, safeAbsolute);
     return relative.split(path.sep).join('/');
+}
+
+/**
+ * Make a finished job artifact durable and return its logical storage path
+ * (`jobs/{jobId}/output/...`, unchanged in both modes).
+ *
+ * Disk mode: the file already lives under STORAGE_ROOT, so this is just
+ * `toRelativeStoragePath`. R2 mode: the file only exists in the ephemeral
+ * function workspace, so it is also uploaded to the bucket under the same
+ * logical key before the job is marked completed.
+ */
+export async function publishArtifact(absolutePath: string): Promise<string> {
+    const relativePath = toRelativeStoragePath(absolutePath);
+    if (env.IS_R2_STORAGE) {
+        const { uploadArtifact } = await import('./storage-r2.service.js');
+        await uploadArtifact(relativePath, absolutePath);
+    }
+    return relativePath;
+}
+
+/**
+ * Resolve a job input into a path readable by local engines.
+ *
+ * Disk mode: inputs already sit on local storage and are read in place (no
+ * behaviour change). R2 mode: inputs live in the bucket, so they are
+ * downloaded into the job workspace and the workspace copy is returned.
+ */
+export async function materializeInputFile(
+    sourcePath: string,
+    destDir: string,
+    fileName: string
+): Promise<string> {
+    if (!sourcePath.startsWith('r2://')) return sourcePath;
+    const { downloadR2ToLocal } = await import('./storage-r2.service.js');
+    await fs.mkdir(destDir, { recursive: true });
+    const dest = path.join(destDir, safeFileName(fileName));
+    await downloadR2ToLocal(sourcePath, dest);
+    return dest;
 }
 
 export function resolveStoragePath(relativePath: string): string {

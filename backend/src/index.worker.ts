@@ -3,9 +3,9 @@ import { env, ensureStorageRootLayout } from './config/env.js';
 import { ensureStorageLayout } from './services/storage.service.js';
 import { startConversionWorker } from './workers/conversion.worker.js';
 import { startCompressionWorker } from './workers/compression.worker.js';
-import { startCleanupWorker } from './workers/cleanup.worker.js';
+import { startCleanupWorker, cleanupExpiredOtps } from './workers/cleanup.worker.js';
 import { startWorkerHeartbeat, clearWorkerHeartbeat } from './workers/heartbeat.js';
-import { closeDatabaseConnections, withApiClient } from './db/client.js';
+import { closeDatabaseConnections } from './db/client.js';
 import { redis } from './queue/connection.js';
 
 let shuttingDown = false;
@@ -46,18 +46,7 @@ async function startWorker() {
     startCleanupWorker();
 
     // Start background OTP cleanup task (runs every hour)
-    setInterval(async () => {
-        try {
-            await withApiClient(async (client) => {
-                const res = await client.query(`DELETE FROM otps WHERE expires_at < NOW()`);
-                if (res.rowCount && res.rowCount > 0) {
-                    logger.info(`Cleaned up ${res.rowCount} expired OTPs`);
-                }
-            });
-        } catch (err) {
-            logger.error({ err }, 'Failed to clean up expired OTPs');
-        }
-    }, 60 * 60 * 1000); // 1 hour
+    setInterval(() => cleanupExpiredOtps(), 60 * 60 * 1000); // 1 hour
 
     logger.info(
         {

@@ -8,7 +8,7 @@ import { env } from '../config/env.js';
 import { CompressionJobData, CompressionResult } from '../models/types.js';
 import { executeCommand } from './command.service.js';
 import { analyzeCompressionInput } from './compression-analyzer.service.js';
-import { getFileSize, toRelativeStoragePath } from './storage.service.js';
+import { getFileSize, publishArtifact } from './storage.service.js';
 
 const imageExt = new Set(['.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp']);
 const archiveExt = new Set(['.zip']);
@@ -135,6 +135,17 @@ async function compressImage(inputPath: string, outputPath: string, quality: num
 }
 
 async function compressPdf(inputPath: string, outputPath: string, quality: number, dpiOverride?: number, jpegQ?: number): Promise<void> {
+    // Serverless runtimes have no ghostscript. With CONVERTER_PROVIDER=remote
+    // the PDF is compressed by the external provider instead (same DPI
+    // mapping as the gs pipeline below).
+    if (env.USE_REMOTE_ENGINE) {
+        const { compressViaRemoteApi } = await import('./converters/RemoteEngine.js');
+        const remotePath = await compressViaRemoteApi(inputPath, path.dirname(outputPath), quality);
+        await fs.copyFile(remotePath, outputPath);
+        await fs.rm(remotePath, { force: true }).catch(() => {});
+        return;
+    }
+
     const dpi = dpiOverride ?? (quality >= 90 ? 300 : quality >= 78 ? 150 : 72);
     const args = [
         '-sDEVICE=pdfwrite',
@@ -460,7 +471,10 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
             fileType = 'archive';
         }
 
-        if (fileType !== 'other') {
+        // Iterative PDF search needs repeated ghostscript runs; each remote
+        // attempt is a billable provider call, so with CONVERTER_PROVIDER=remote
+        // we use the single-shot quality->DPI mapping instead.
+        if (fileType !== 'other' && !(env.USE_REMOTE_ENGINE && fileType === 'pdf')) {
             try {
                 search = await findOptimalQualityForTarget(
                     job.inputPath,
@@ -521,8 +535,8 @@ export async function runCompressionJob(job: CompressionJobData, outputDir: stri
     const qualityOutputSize = await getFileSize(qualityOutputPath);
     const savingsPercent = originalSize > 0 ? Math.max(0, ((originalSize - compressedSize) / originalSize) * 100) : 0;
 
-    const relativePath = toRelativeStoragePath(finalOutputPath);
-    const qualityRelativePath = toRelativeStoragePath(qualityOutputPath);
+    const relativePath = await publishArtifact(finalOutputPath);
+    const qualityRelativePath = await publishArtifact(qualityOutputPath);
 
     const suggestions = [...inputAnalysis.suggestions];
     if (isRar) {

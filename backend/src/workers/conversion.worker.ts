@@ -4,7 +4,7 @@ import { logger } from '../config/logger.js';
 import { ConversionJobData, ConversionResult, OutputFileRef } from '../models/types.js';
 import { CONVERSION_QUEUE_NAME } from '../queue/queues.js';
 import { redisConnection } from '../queue/connection.js';
-import { createJobWorkspace, toRelativeStoragePath } from '../services/storage.service.js';
+import { createJobWorkspace, materializeInputFile, publishArtifact } from '../services/storage.service.js';
 import { updateJobStatus, setJobResult } from '../services/job-state.service.js';
 import { auditService } from '../services/audit.service.js';
 import crypto from 'crypto';
@@ -17,6 +17,7 @@ import { SharpEngine } from '../services/converters/SharpEngine.js';
 import { FfmpegEngine } from '../services/converters/FfmpegEngine.js';
 import { PdfEngine } from '../services/converters/PdfEngine.js';
 import { ArchiveEngine } from '../services/converters/ArchiveEngine.js';
+import { ArchiveJsEngine } from '../services/converters/ArchiveJsEngine.js';
 import { IcoEngine } from '../services/converters/IcoEngine.js';
 import { HeicEngine } from '../services/converters/HeicEngine.js';
 import { PdfToDocxLayoutEngine } from '../services/converters/PdfToDocxLayoutEngine.js';
@@ -45,6 +46,15 @@ const ENGINES: ConverterEngine[] = [
     new PdfEngine(),
     new ArchiveEngine()
 ];
+
+// Pure-JS/WASM pairs that keep running in-process even when a remote provider
+// is configured — free, instant, and higher fidelity than an API round-trip.
+// ArchiveJsEngine covers zip/tar/tar.gz interconversion (7z pairs still go
+// remote: CloudConvert), sharp/heic cover raster images, and everything else
+// routes to the provider pair (see selectRemoteProvider).
+const LOCAL_SAFE_ENGINES: ConverterEngine[] = [new ArchiveJsEngine(), new SharpEngine(), new HeicEngine()];
+const isLocalSafePair = (sourceFormat: string, targetFormat: string): boolean =>
+    LOCAL_SAFE_ENGINES.some((e) => e.canHandle(sourceFormat, targetFormat));
 
 /**
  * Convert a PDF to per-page images using pdftoppm (poppler-utils).
@@ -89,28 +99,34 @@ async function statSize(filePath: string): Promise<number> {
     return stats.size;
 }
 
-export function startConversionWorker(): Worker<ConversionJobData> {
-    // Pre-warm LibreOffice profiles in the background so the first conversions
-    // after a boot don't each pay ~15s of profile cold-start. Never blocks boot.
-    prewarmLibreOfficeProfiles().catch(() => {});
+/**
+ * Run one conversion job to completion.
+ *
+ * Shared by the BullMQ worker below (disk deployments) and the QStash
+ * serverless callback handler (api/jobs/convert): the queue transport is the
+ * only difference, so the actual work lives here exactly once.
+ *
+ * @param data        Job payload (same shape published by /v1/convert).
+ * @param firstAttempt Whether this is attempt 0 — controls startedAt stamping
+ *                     so retries don't reset the recorded duration.
+ */
+export async function processConversionJob(data: ConversionJobData, firstAttempt: boolean): Promise<ConversionResult> {
+    const { jobId, fileId, inputName, sourceFormat, targetFormat, options } = data;
 
-    const worker = new Worker<ConversionJobData>(
-        CONVERSION_QUEUE_NAME,
-        async (job: Job<ConversionJobData>) => {
-            const { jobId, fileId, inputPath, inputName, sourceFormat, targetFormat, options } = job.data;
+    // Only stamp startedAt on the first attempt so retries don't reset the duration.
+    await updateJobStatus(jobId, {
+        status: 'in_progress',
+        stage: 'validating',
+        progress: 5,
+        message: 'Preparing conversion workspace.',
+        startedAt: firstAttempt,
+    });
 
-            // Only stamp startedAt on the first attempt so retries don't reset the duration.
-            const firstAttempt = job.attemptsMade === 0;
+    const workspace = await createJobWorkspace(jobId);
 
-            await updateJobStatus(jobId, {
-                status: 'in_progress',
-                stage: 'validating',
-                progress: 5,
-                message: 'Preparing conversion workspace.',
-                startedAt: firstAttempt,
-            });
-
-            const workspace = await createJobWorkspace(jobId);
+    // Disk mode: returns the upload path untouched (read in place, as always).
+    // R2 mode: downloads the input into the workspace so local engines can read it.
+    const inputPath = await materializeInputFile(data.inputPath, workspace.inputDir, inputName);
 
             await updateJobStatus(jobId, {
                 stage: 'converting',
@@ -124,7 +140,30 @@ export function startConversionWorker(): Worker<ConversionJobData> {
             let resultInfo: EngineConversionResult | null = null;
             let imagePaths: string[] | null = null;
 
-            if ((OFFICE_FORMATS.has(sourceFormat) || LO_RASTER_SOURCES.has(sourceFormat)) && ['jpg', 'png'].includes(targetFormat)) {
+            if (env.USE_REMOTE_ENGINE && !isLocalSafePair(sourceFormat, targetFormat)) {
+                // Serverless (CONVERTER_PROVIDER=remote): pairs that need system
+                // binaries go to the external provider in one call. The local
+                // LibreOffice/pdftoppm branches below would just fail — none of
+                // those binaries exist on a serverless runtime.
+                const { convertViaRemoteApi } = await import('../services/converters/RemoteEngine.js');
+                await updateJobStatus(jobId, {
+                    stage: 'converting',
+                    progress: 25,
+                    message: 'Converting using remote conversion provider.',
+                });
+                const remoteResult = await convertViaRemoteApi({
+                    inputPath,
+                    outputDir: workspace.outputDir,
+                    sourceFormat,
+                    targetFormat,
+                    options,
+                });
+                if (remoteResult.imagePaths && remoteResult.imagePaths.length > 0) {
+                    imagePaths = remoteResult.imagePaths;
+                } else {
+                    resultInfo = remoteResult;
+                }
+            } else if ((OFFICE_FORMATS.has(sourceFormat) || LO_RASTER_SOURCES.has(sourceFormat)) && ['jpg', 'png'].includes(targetFormat)) {
                 const libreOffice = new LibreOfficeEngine();
                 const pdfResult = await withHeavyJobLock(() => libreOffice.convert(inputPath, workspace.outputDir, sourceFormat, 'pdf', options));
                 imagePaths = await convertPdfToImages(
@@ -149,7 +188,14 @@ export function startConversionWorker(): Worker<ConversionJobData> {
                 resultInfo = await withHeavyJobLock(() => libreOffice.convert(pngResult.outputPath, workspace.outputDir, 'png', 'pdf', options));
                 await fs.rm(pngResult.outputPath, { force: true }).catch(() => {});
             } else {
-                const engine = ENGINES.find(e => e.canHandle(sourceFormat, targetFormat));
+                // In remote mode the local-safe engines win the selection:
+                // the binary engines earlier in ENGINES (LibreOffice, 7z,
+                // pdftoppm...) do not exist on a serverless runtime, so a
+                // pair that IS locally runnable must not resolve to them.
+                // Disk deployments keep the original ENGINES order untouched.
+                const engine = env.USE_REMOTE_ENGINE
+                    ? [...LOCAL_SAFE_ENGINES, ...ENGINES].find(e => e.canHandle(sourceFormat, targetFormat))
+                    : ENGINES.find(e => e.canHandle(sourceFormat, targetFormat));
                 if (!engine) {
                     throw new Error(`No conversion engine available to convert ${sourceFormat} to ${targetFormat}`);
                 }
@@ -166,7 +212,7 @@ export function startConversionWorker(): Worker<ConversionJobData> {
             }
 
             const buildRef = async (filePath: string, pageCount?: number): Promise<OutputFileRef & { pageCount?: number }> => {
-                const relativePath = toRelativeStoragePath(filePath);
+                const relativePath = await publishArtifact(filePath);
                 return {
                     relativePath,
                     downloadUrl: toDownloadUrl(relativePath),
@@ -243,7 +289,7 @@ export function startConversionWorker(): Worker<ConversionJobData> {
             });
 
             auditService.log({
-                userId: job.data.userId,
+                userId: data.userId,
                 eventType: 'job.completed',
                 severity: 'info',
                 resourceId: jobId,
@@ -251,7 +297,56 @@ export function startConversionWorker(): Worker<ConversionJobData> {
             });
 
             return result;
-        },
+}
+
+/**
+ * Persist a failed conversion attempt (shared by the BullMQ `failed` listener
+ * and the serverless QStash handler). Only writes a terminal `failed` status
+ * when no retries remain; otherwise the DB status would flap
+ * failed -> in_progress when the retry succeeds.
+ */
+export async function persistConversionFailure(
+    jobId: string,
+    userId: string | undefined,
+    message: string,
+    isFinal: boolean
+): Promise<void> {
+    try {
+        if (isFinal) {
+            await updateJobStatus(jobId, {
+                status: 'failed',
+                stage: 'failed',
+                progress: 100,
+                error: message,
+                message: 'Conversion failed.',
+                completedAt: true,
+            });
+        }
+
+        auditService.log({
+            userId,
+            eventType: 'job.failed',
+            severity: 'error',
+            resourceId: jobId,
+            metadata: { error: message }
+        });
+
+        logger.error({ jobId, err: message }, 'Conversion job failed');
+    } catch (err) {
+        // A DB write failure here must never crash the process out from
+        // under BullMQ; log and move on.
+        logger.error({ jobId, err }, 'Failed to persist conversion failure state');
+    }
+}
+
+export function startConversionWorker(): Worker<ConversionJobData> {
+    // Pre-warm LibreOffice profiles in the background so the first conversions
+    // after a boot don't each pay ~15s of profile cold-start. Never blocks boot.
+    prewarmLibreOfficeProfiles().catch(() => {});
+
+    const worker = new Worker<ConversionJobData>(
+        CONVERSION_QUEUE_NAME,
+        async (job: Job<ConversionJobData>) => processConversionJob(job.data, job.attemptsMade === 0),
         {
             connection: redisConnection,
             concurrency: env.WORKER_CONCURRENCY,
@@ -269,37 +364,11 @@ export function startConversionWorker(): Worker<ConversionJobData> {
         const message = typeof failedReason === 'string' ? failedReason : failedReason instanceof Error ? failedReason.message : 'Conversion failed.';
 
         // BullMQ's `failed` event fires after EVERY attempt, not just the final
-        // one. Only persist failure state when no retries remain; otherwise the
-        // DB status would flap failed -> in_progress on retried jobs.
+        // one. Only persist failure state when no retries remain.
         const attempts = job?.opts.attempts ?? 1;
         const isFinal = (job?.attemptsMade ?? 0) >= attempts;
 
-        try {
-            if (isFinal) {
-                await updateJobStatus(jobId, {
-                    status: 'failed',
-                    stage: 'failed',
-                    progress: 100,
-                    error: message,
-                    message: 'Conversion failed.',
-                    completedAt: true,
-                });
-            }
-
-            auditService.log({
-                userId: job?.data.userId,
-                eventType: 'job.failed',
-                severity: 'error',
-                resourceId: jobId,
-                metadata: { error: message }
-            });
-
-            logger.error({ jobId, err: message }, 'Conversion job failed');
-        } catch (err) {
-            // A DB write failure here must never crash the process out from
-            // under BullMQ; log and move on.
-            logger.error({ jobId, err }, 'Failed to persist conversion failure state');
-        }
+        await persistConversionFailure(jobId, job?.data.userId, message, isFinal);
     });
 
     return worker;

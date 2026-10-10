@@ -15,6 +15,7 @@ import { jobService } from '../../services/job.service.js';
 import { auditService } from '../../services/audit.service.js';
 import { getUserProfile, updateUserProfile, ensureUserExists } from '../../services/profile.service.js';
 import { updateJobStatus } from '../../services/job-state.service.js';
+import { qstashPublish } from '../../queue/qstash.js';
 
 // Content-Disposition filenames are user-controlled (original upload names /
 // artifact names). Strip characters that could break out of the header value.
@@ -59,8 +60,13 @@ const BatchImageConversionSchema = z.object({
 
 export async function filesRoutes(app: FastifyInstance) {
     const enqueue = async (queue: any, jobName: string, jobId: string, jobData: any, opts: any) => {
+        // Queue backend dispatch: BullMQ/Redis for long-running processes,
+        // QStash for serverless (the callback lands on /api/jobs/*).
+        const publish = env.IS_QSTASH_QUEUE
+            ? () => qstashPublish(jobName, jobData)
+            : () => queue.add(jobName, jobData, opts);
         try {
-            await queue.add(jobName, jobData, opts);
+            await publish();
         } catch (err) {
             // A failed enqueue leaves the DB row stuck in 'queued' forever unless
             // we compensate. Mark it failed so clients get a terminal state.
@@ -126,6 +132,131 @@ export async function filesRoutes(app: FastifyInstance) {
         } catch (error) {
             const message = error instanceof Error ? error.message : 'File upload failed.';
             return reply.code(500).send({ success: false, message });
+        }
+    });
+
+    // --- Direct-to-R2 upload flow (serverless deployments) -----------------
+    // The browser uploads big files straight to the bucket with a presigned
+    // PUT URL, which sidesteps the platform's ~4.5MB request body cap; the API
+    // only sees metadata plus a validation pass afterwards. On disk-mode
+    // deployments this endpoint answers 501 and the frontend helper falls back
+    // to the classic multipart /v1/files/upload above, byte-for-byte.
+    const PresignSchema = z.object({
+        name: z.string().min(1).max(1024),
+        mimeType: z.string().min(1).max(255),
+        size: z.number().int().positive(),
+    });
+
+    const directUploadDisabled = (reply: any) =>
+        reply.code(501).send({
+            success: false,
+            message: 'Direct-to-storage upload is not enabled on this deployment.',
+        });
+
+    app.post('/v1/files/presign', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+        if (!env.IS_R2_STORAGE) return directUploadDisabled(reply);
+
+        const parsed = PresignSchema.safeParse(request.body);
+        if (!parsed.success) {
+            return reply.code(400).send({ success: false, message: 'Invalid presign payload.', details: parsed.error.flatten() });
+        }
+        const { name, mimeType, size } = parsed.data;
+        if (size > env.MAX_UPLOAD_BYTES) {
+            return reply.code(413).send({
+                success: false,
+                message: `File exceeds the ${Math.floor(env.MAX_UPLOAD_BYTES / (1024 * 1024))}MB upload limit.`,
+            });
+        }
+
+        try {
+            const user = await extractFirebaseUser(request);
+            const userId = user?.uid ?? undefined;
+            if (userId) {
+                await ensureUserExists({ uid: userId, email: user?.email, name: user?.name, avatarUrl: user?.picture });
+            }
+
+            const r2 = await import('../../services/storage-r2.service.js');
+            const fileId = randomUUID();
+            const storedName = `${fileId}-${sanitizeFileName(name)}`;
+            const r2Key = `uploads/${storedName}`;
+
+            // Pending row: invisible to getUploadMeta until /complete validates
+            // the actual bytes, so an unvalidated object can never feed a job.
+            await r2.insertPendingUpload({ fileId, userId, fileName: name, mimeType, size, r2Key });
+
+            const expiresIn = 900;
+            const uploadUrl = await r2.presignPut(r2Key, mimeType, expiresIn);
+
+            return {
+                fileId,
+                uploadUrl,
+                completeUrl: `/v1/files/${fileId}/complete`,
+                expiresInSeconds: expiresIn,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Could not create upload URL.';
+            return reply.code(500).send({ success: false, message });
+        }
+    });
+
+    app.post('/v1/files/:fileId/complete', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+        if (!env.IS_R2_STORAGE) return directUploadDisabled(reply);
+
+        const { fileId } = request.params as { fileId: string };
+        const user = await extractFirebaseUser(request);
+        const userId = user?.uid ?? null;
+
+        let tempPath: string | null = null;
+        try {
+            const r2 = await import('../../services/storage-r2.service.js');
+            const row = await r2.getUploadRowForUser(fileId, userId);
+            if (!row) {
+                // Missing and someone-else's are indistinguishable on purpose.
+                return reply.code(404).send({ success: false, message: 'Uploaded file not found.' });
+            }
+
+            if (row.status === 'ready') {
+                const meta = r2.uploadRowToMeta(row);
+                return {
+                    fileId: meta.fileId,
+                    name: meta.originalName,
+                    size: meta.size,
+                    mimeType: meta.mimeType,
+                    createdAt: meta.createdAt,
+                };
+            }
+
+            // Pull the object back for full validation (magic bytes, size) —
+            // the same checks the classic multipart upload runs before saving.
+            tempPath = path.join(env.STORAGE_ROOT, 'temp', `${randomUUID()}-${sanitizeFileName(row.original_name)}`);
+            await fsPromises.mkdir(path.dirname(tempPath), { recursive: true });
+            await r2.downloadKeyToLocal(row.r2_key, tempPath);
+
+            const actualSize = (await fsPromises.stat(tempPath)).size;
+            const validation = await validateFile(tempPath, row.mime_type, row.original_name);
+            if (!validation.valid) {
+                await r2.deleteKey(row.r2_key);
+                await r2.deleteUploadRow(fileId);
+                return reply.code(400).send({ success: false, message: validation.error });
+            }
+
+            const meta = await r2.finalizeUploadRow(fileId, actualSize);
+            if (!meta) {
+                return reply.code(404).send({ success: false, message: 'Uploaded file not found.' });
+            }
+
+            return {
+                fileId: meta.fileId,
+                name: meta.originalName,
+                size: meta.size,
+                mimeType: meta.mimeType,
+                createdAt: meta.createdAt,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Upload completion failed.';
+            return reply.code(500).send({ success: false, message });
+        } finally {
+            if (tempPath) await fsPromises.unlink(tempPath).catch(() => {});
         }
     });
 
@@ -410,9 +541,16 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        const stream = fs.createReadStream(meta.path);
         reply.header('Content-Type', meta.mimeType || 'application/octet-stream');
         reply.header('Content-Disposition', `attachment; filename="${safeHeaderFilename(meta.originalName)}"`);
+
+        if (meta.path.startsWith('r2://')) {
+            const { getObjectStream, r2UriToKey } = await import('../../services/storage-r2.service.js');
+            const { stream } = await getObjectStream(r2UriToKey(meta.path));
+            return reply.send(stream);
+        }
+
+        const stream = fs.createReadStream(meta.path);
         return reply.send(stream);
     });
 
@@ -433,6 +571,32 @@ export async function filesRoutes(app: FastifyInstance) {
             return reply.code(403).send({ message: 'You do not have access to this artifact.' });
         }
 
+        let contentType: string;
+        let fileName: string;
+
+        if (env.IS_R2_STORAGE) {
+            // Logical path == R2 key (`jobs/{jobId}/...`).
+            const { getObjectStream, headSize } = await import('../../services/storage-r2.service.js');
+            const size = await headSize(query.path);
+            if (size === null) {
+                return reply.code(404).send({ message: 'Artifact file not found.' });
+            }
+
+            if (uid) {
+                const profile = await getUserProfile(uid);
+                await updateUserProfile(uid, {
+                    downloadedBytes: (profile?.downloadedBytes || 0) + size
+                });
+            }
+
+            contentType = mime.lookup(query.path) || 'application/octet-stream';
+            fileName = path.basename(query.path);
+            reply.header('Content-Type', contentType);
+            reply.header('Content-Disposition', `attachment; filename="${safeHeaderFilename(fileName)}"`);
+            const { stream } = await getObjectStream(query.path);
+            return reply.send(stream);
+        }
+
         let absolutePath: string;
         try {
             absolutePath = resolveStoragePath(query.path);
@@ -450,8 +614,8 @@ export async function filesRoutes(app: FastifyInstance) {
             });
         }
 
-        const contentType = mime.lookup(absolutePath) || 'application/octet-stream';
-        const fileName = path.basename(absolutePath);
+        contentType = mime.lookup(absolutePath) || 'application/octet-stream';
+        fileName = path.basename(absolutePath);
 
         reply.header('Content-Type', contentType);
         reply.header('Content-Disposition', `attachment; filename="${safeHeaderFilename(fileName)}"`);
@@ -466,6 +630,30 @@ export async function filesRoutes(app: FastifyInstance) {
             return reply.code(404).send({ message: 'File not found or link expired.' });
         }
 
+        const user = await extractFirebaseUser(request as any);
+
+        if (env.IS_R2_STORAGE) {
+            const { getObjectStream, headSize } = await import('../../services/storage-r2.service.js');
+            const size = await headSize(job.storage_path);
+            if (size === null) {
+                return reply.code(404).send({ message: 'File not found or link expired.' });
+            }
+
+            if (user?.uid) {
+                const profile = await getUserProfile(user.uid);
+                await updateUserProfile(user.uid, {
+                    downloadedBytes: (profile?.downloadedBytes || 0) + size
+                });
+            }
+
+            const contentType = mime.lookup(job.storage_path) || 'application/octet-stream';
+            const fileName = job.output_filename || path.basename(job.storage_path);
+            reply.header('Content-Type', contentType);
+            reply.header('Content-Disposition', `attachment; filename="${safeHeaderFilename(fileName)}"`);
+            const { stream } = await getObjectStream(job.storage_path);
+            return reply.send(stream);
+        }
+
         const absolutePath = resolveStoragePath(job.storage_path);
         try {
             await fsPromises.access(absolutePath);
@@ -475,7 +663,6 @@ export async function filesRoutes(app: FastifyInstance) {
         const contentType = mime.lookup(absolutePath) || 'application/octet-stream';
         const fileName = job.output_filename || path.basename(absolutePath);
 
-        const user = await extractFirebaseUser(request as any);
         if (user?.uid) {
             const profile = await getUserProfile(user.uid);
             const stats = await fsPromises.stat(absolutePath);

@@ -3,6 +3,9 @@ export interface EngineConversionResult {
     sizeBytes: number;
     pages?: number; // Only applicable for documents/PDFs
     durationMs: number;
+    // Multi-file outputs (e.g. one image per PDF page from the remote engine).
+    // When set, callers treat these as the imageRefs set instead of a single file.
+    imagePaths?: string[];
 }
 
 export interface EngineOptions {

@@ -8,7 +8,7 @@ import { redisConnection } from '../queue/connection.js';
 import { updateJobStatus, setJobResult } from '../services/job-state.service.js';
 import { runCompressionJob } from '../services/compression.service.js';
 import { combineImagesToSinglePdf } from '../services/image-to-pdf.service.js';
-import { createJobWorkspace, copyInputToWorkspace, getFileSize, toRelativeStoragePath } from '../services/storage.service.js';
+import { createJobWorkspace, copyInputToWorkspace, getFileSize, materializeInputFile, publishArtifact } from '../services/storage.service.js';
 import { auditService } from '../services/audit.service.js';
 import crypto from 'crypto';
 
@@ -18,15 +18,16 @@ function isBatchImageJob(data: CompressionOrImageJobData): data is BatchImageCon
     return 'batchId' in data && 'imageFilePaths' in data;
 }
 
-export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
-    const worker = new Worker<CompressionOrImageJobData>(
-        COMPRESSION_QUEUE_NAME,
-        async (job: Job<CompressionOrImageJobData>) => {
-            const data = job.data;
-
-            // Only stamp startedAt on the first attempt so retries don't reset duration.
-            const firstAttempt = job.attemptsMade === 0;
-
+/**
+ * Run one compression / batch-image job to completion.
+ *
+ * Shared by the BullMQ worker below (disk deployments) and the QStash
+ * serverless callback handler (api/jobs/compress).
+ *
+ * @param data        Job payload (same shape published by /v1/compress).
+ * @param firstAttempt Whether this is attempt 0 — controls startedAt stamping.
+ */
+export async function processCompressionJob(data: CompressionOrImageJobData, firstAttempt: boolean): Promise<any> {
             // Handle batch image conversion
             if (isBatchImageJob(data)) {
                 await updateJobStatus(data.jobId, {
@@ -50,11 +51,15 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
                 for (let i = 0; i < data.imageFilePaths.length; i++) {
                     const sourceImagePath = data.imageFilePaths[i];
                     const imageName = data.imageNames[i] || `image-${i + 1}`;
-                    const copiedPath = await copyInputToWorkspace(
-                        sourceImagePath,
-                        workspace.inputDir,
-                        imageName
-                    );
+                    // R2 inputs are downloaded into the workspace; disk inputs
+                    // keep the original copy-into-workspace behaviour.
+                    const copiedPath = sourceImagePath.startsWith('r2://')
+                        ? await materializeInputFile(sourceImagePath, workspace.inputDir, imageName)
+                        : await copyInputToWorkspace(
+                            sourceImagePath,
+                            workspace.inputDir,
+                            imageName
+                        );
                     copiedImagePaths.push(copiedPath);
 
                     // Update progress
@@ -78,7 +83,7 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
 
                 // Get file size and create result
                 const pdfSize = await getFileSize(pdfOutputPath);
-                const pdfRelativePath = toRelativeStoragePath(pdfOutputPath);
+                const pdfRelativePath = await publishArtifact(pdfOutputPath);
 
                 const toDownloadUrl = (relativePath: string) => `/v1/files/download?path=${encodeURIComponent(relativePath)}`;
 
@@ -143,7 +148,9 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
             });
 
             const workspace = await createJobWorkspace(compressionData.jobId);
-            const inputPath = await copyInputToWorkspace(compressionData.inputPath, workspace.inputDir, compressionData.inputName);
+            const inputPath = compressionData.inputPath.startsWith('r2://')
+                ? await materializeInputFile(compressionData.inputPath, workspace.inputDir, compressionData.inputName)
+                : await copyInputToWorkspace(compressionData.inputPath, workspace.inputDir, compressionData.inputName);
 
             await updateJobStatus(compressionData.jobId, {
                 stage: 'analyzing_content',
@@ -186,7 +193,51 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
             });
 
             return result;
-        },
+}
+
+/**
+ * Persist a failed compression attempt (shared by the BullMQ `failed` listener
+ * and the serverless QStash handler). Terminal `failed` status is only written
+ * when no retries remain.
+ */
+export async function persistCompressionFailure(
+    jobId: string,
+    userId: string | undefined,
+    message: string,
+    isFinal: boolean
+): Promise<void> {
+    try {
+        if (isFinal) {
+            await updateJobStatus(jobId, {
+                status: 'failed',
+                stage: 'failed',
+                progress: 100,
+                error: message,
+                message: 'Job failed.',
+                completedAt: true,
+            });
+        }
+
+        auditService.log({
+            userId,
+            eventType: 'job.failed',
+            severity: 'error',
+            resourceId: jobId,
+            metadata: { error: message }
+        });
+
+        logger.error({ jobId, err: message }, 'Compression/Image job failed');
+    } catch (err) {
+        // A DB write failure here must never crash the process out from
+        // under the queue transport; log and move on.
+        logger.error({ jobId, err }, 'Failed to persist compression failure state');
+    }
+}
+
+export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
+    const worker = new Worker<CompressionOrImageJobData>(
+        COMPRESSION_QUEUE_NAME,
+        async (job: Job<CompressionOrImageJobData>) => processCompressionJob(job.data, job.attemptsMade === 0),
         {
             connection: redisConnection,
             concurrency: Math.max(1, Math.floor(env.WORKER_CONCURRENCY / 2) || 1),
@@ -204,37 +255,11 @@ export function startCompressionWorker(): Worker<CompressionOrImageJobData> {
         const message = typeof failedReason === 'string' ? failedReason : failedReason instanceof Error ? failedReason.message : 'Job failed.';
 
         // BullMQ's `failed` event fires after EVERY attempt, not just the final
-        // one. Only persist failure state when no retries remain; otherwise the
-        // DB status would flap failed -> in_progress on retried jobs.
+        // one. Only persist failure state when no retries remain.
         const attempts = job?.opts.attempts ?? 1;
         const isFinal = (job?.attemptsMade ?? 0) >= attempts;
 
-        try {
-            if (isFinal) {
-                await updateJobStatus(jobId, {
-                    status: 'failed',
-                    stage: 'failed',
-                    progress: 100,
-                    error: message,
-                    message: 'Job failed.',
-                    completedAt: true,
-                });
-            }
-
-            auditService.log({
-                userId: job?.data.userId,
-                eventType: 'job.failed',
-                severity: 'error',
-                resourceId: jobId,
-                metadata: { error: message }
-            });
-
-            logger.error({ jobId, err: message }, 'Compression/Image job failed');
-        } catch (err) {
-            // A DB write failure here must never crash the process out from
-            // under BullMQ; log and move on.
-            logger.error({ jobId, err }, 'Failed to persist failure state');
-        }
+        await persistCompressionFailure(jobId, job?.data.userId, message, isFinal);
     });
 
     return worker;

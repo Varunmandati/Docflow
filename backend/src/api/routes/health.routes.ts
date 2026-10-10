@@ -44,28 +44,37 @@ export async function healthRoutes(app: FastifyInstance) {
         // honest answer to "is anything actually processing jobs right now".
         let workerHeartbeatAgeMs: number | null = null;
         let workerHealthy = true;
-        try {
-            const beat = await Promise.race([
-                redisConnection.get(env.WORKER_HEARTBEAT_KEY),
-                timeout(3000),
-            ]);
-            if (beat) {
-                workerHeartbeatAgeMs = Math.max(0, Date.now() - Number(beat));
-                workerHealthy = workerHeartbeatAgeMs <= env.WORKER_HEARTBEAT_STALE_MS;
-            } else {
-                // No key at all. Either the worker has not started yet, or this
-                // deployment runs inline workers inside the API process.
-                workerHealthy = env.RUN_INLINE_WORKERS;
+        if (env.IS_QSTASH_QUEUE) {
+            // Serverless: there is no long-lived worker to heartbeat — QStash
+            // drives per-job serverless executions. Redis+DB health below is
+            // the honest signal for this deployment shape.
+            workerHealthy = true;
+        } else {
+            try {
+                const beat = await Promise.race([
+                    redisConnection.get(env.WORKER_HEARTBEAT_KEY),
+                    timeout(3000),
+                ]);
+                if (beat) {
+                    workerHeartbeatAgeMs = Math.max(0, Date.now() - Number(beat));
+                    workerHealthy = workerHeartbeatAgeMs <= env.WORKER_HEARTBEAT_STALE_MS;
+                } else {
+                    // No key at all. Either the worker has not started yet, or this
+                    // deployment runs inline workers inside the API process.
+                    workerHealthy = env.RUN_INLINE_WORKERS;
+                }
+            } catch (e) {
+                workerHealthy = false;
             }
-        } catch (e) {
-            workerHealthy = false;
         }
 
         // Queue depth is cheap to read and turns "degraded" into an actionable
         // diagnosis. A deep `waiting` backlog with a healthy worker means jobs
-        // are queued faster than WORKER_CONCURRENCY can drain them.
+        // are queued faster than WORKER_CONCURRENCY can drain them. Skipped on
+        // QStash: BullMQ keys never exist there, and every probe would spend
+        // Upstash free-tier commands on an empty answer.
         let queue: { waiting: number; active: number; failed: number } | null = null;
-        if (redisHealthy) {
+        if (redisHealthy && !env.IS_QSTASH_QUEUE) {
             try {
                 const counts = await Promise.race([
                     conversionQueue.getJobCounts('waiting', 'active', 'failed'),

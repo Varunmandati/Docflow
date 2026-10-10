@@ -17,6 +17,7 @@ import UploadProgressIndicator from './UploadProgressIndicator';
 import ConversionProgressWithStages from './ConversionProgressWithStages';
 import ErrorState from './ErrorState';
 import { authFetch } from '../services/authFetch';
+import { uploadWithPresignFallback } from '../services/upload';
 
 declare const jspdf: any;
 declare const Tiff: any;
@@ -193,13 +194,11 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
     ): Promise<DownloadableFile[]> => {
         const apiBase = getConversionApiBase();
 
-        const uploadForm = new FormData();
-        uploadForm.append('file', appFile.file, appFile.file.name);
-
-        const uploadResponse = await authFetch(buildApiUrl(apiBase, '/v1/files/upload'), {
-            method: 'POST',
-            body: uploadForm,
-        });
+        const uploadResponse = await uploadWithPresignFallback(
+            appFile.file,
+            buildApiUrl(apiBase, '/v1/files/presign'),
+            buildApiUrl(apiBase, '/v1/files/upload'),
+        );
 
         if (uploadResponse.status === 401) {
             addToast(t.status.signInRequired || 'Sign in is required to convert office documents.', 'error');
