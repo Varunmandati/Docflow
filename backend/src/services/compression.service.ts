@@ -140,9 +140,17 @@ async function compressPdf(inputPath: string, outputPath: string, quality: numbe
     // mapping as the gs pipeline below).
     if (env.USE_REMOTE_ENGINE) {
         const { compressViaRemoteApi } = await import('./converters/RemoteEngine.js');
-        const remotePath = await compressViaRemoteApi(inputPath, path.dirname(outputPath), quality);
-        await fs.copyFile(remotePath, outputPath);
-        await fs.rm(remotePath, { force: true }).catch(() => {});
+        // The remote provider names its output `${base}_compressed.<ext>`, which
+        // can collide with (or overwrite) the caller's expected outputPath — and
+        // our sibling quality-preserved run uses the same name. Download into an
+        // ephemeral subdir so each call's result is distinct, then move it.
+        const remoteDir = await fs.mkdtemp(path.join(path.dirname(outputPath), '.compress-'));
+        try {
+            const remotePath = await compressViaRemoteApi(inputPath, remoteDir, quality);
+            await fs.copyFile(remotePath, outputPath);
+        } finally {
+            await fs.rm(remoteDir, { recursive: true, force: true }).catch(() => {});
+        }
         return;
     }
 

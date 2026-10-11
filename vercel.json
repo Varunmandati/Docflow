@@ -18,8 +18,8 @@
   ],
   "rewrites": [
     {
-      "source": "/v1/:path*",
-      "destination": "/api/backend?p=/v1/:path*"
+      "source": "/v1/:route*",
+      "destination": "/api/backend?p=/v1/:route*"
     },
     {
       "source": "/health",
