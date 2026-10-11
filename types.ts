@@ -111,6 +111,7 @@ export interface HistoryEntry {
     status: 'Success' | 'Failed';
     url?: string; // URL to the generated PDF for re-download
     type?: 'Convert' | 'Compress'; // Type of operation
+    format?: string; // Human-readable conversion pair, e.g. "PDF → DOCX"
 }
 
 export interface ConversionSettings {

@@ -2140,6 +2140,20 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                     {!isConverting && (
                         <div className="animate-in-item">
                             <div className="mt-6 space-y-6">
+                                <div className="p-5 well rounded-xl">
+                                    <p className="caption-text font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Select Output Format:</p>
+                                    <div className="segmented-control w-full">
+                                        {(['pdf', 'jpg', 'png', 'docx'] as OutputFormat[]).map((format) => (
+                                            <button
+                                                key={format}
+                                                onClick={() => setGlobalOutputFormat(format)}
+                                                className={`uppercase ${globalOutputFormat === format ? 'active' : ''}`}
+                                            >
+                                                {format}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
                                 {showMergeToggle && <ToggleSwitch label={mergeLabel} enabled={mergeFiles} onChange={setMergeFiles} />}
                                 
                                 <ConversionOptions

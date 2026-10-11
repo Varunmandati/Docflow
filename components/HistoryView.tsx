@@ -38,7 +38,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = '
 
         if (searchTerm.trim()) {
             const term = searchTerm.toLowerCase();
-            result = result.filter(item => item.name.toLowerCase().includes(term));
+            result = result.filter(item => item.name.toLowerCase().includes(term)
+                || (item.format?.toLowerCase().includes(term) ?? false));
         }
 
         return result;
@@ -115,7 +116,14 @@ const HistoryView: React.FC<HistoryViewProps> = ({ history, t, initialFilter = '
                                                 key={item.id} 
                                                 className={`border-b border-[var(--border-color)] last:border-b-0 transition-colors duration-150 hover:bg-[var(--hover)] cursor-pointer ${expired ? 'opacity-60' : ''}`}
                                             >
-                                                <td className="py-3 px-4 body-sm font-medium text-[var(--text-primary)] max-w-[200px] truncate">{item.name}</td>
+                                                <td className="py-3 px-4 body-sm font-medium text-[var(--text-primary)] max-w-[200px]">
+                                                    <p className="truncate">{item.name}</p>
+                                                    {item.format && (
+                                                        <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--primary-color)] truncate" title={item.format}>
+                                                            {item.format}
+                                                        </p>
+                                                    )}
+                                                </td>
                                                 <td className="py-3 px-4">
                                                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-[var(--background-secondary)] text-[var(--text-secondary)] border border-[var(--border-color)]">
                                                         {item.type || 'Unknown'}

@@ -121,6 +121,9 @@ const App: React.FC = () => {
                         ? `/v1/download/${job.download_token}`
                         : undefined,
                     type: job.job_type === 'compression' ? 'Compress' as const : 'Convert' as const,
+                    format: job.input_format && job.output_format
+                        ? `${String(job.input_format).toUpperCase()} → ${String(job.output_format).toUpperCase()}`
+                        : undefined,
                 }));
 
                 setHistory(entries);

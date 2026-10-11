@@ -111,3 +111,5 @@ metadata.json
 # Snapshot produced by an external code-audit tool - a stale duplicate of the
 # real source tree, not part of the app.
 docflow-audit/
+.vercel
+.env*

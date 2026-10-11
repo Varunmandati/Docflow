@@ -6,7 +6,8 @@
   "functions": {
     "api/*.ts": {
       "maxDuration": 300,
-      "memory": 2048
+      "memory": 2048,
+      "includeFiles": "backend/node_modules/{strtok3,token-types,uint8array-extras,@tokenizer/inflate,@tokenizer/token,@borewit/text-codec,ieee754,debug}/**"
     }
   },
   "crons": [
