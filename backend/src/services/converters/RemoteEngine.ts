@@ -7,7 +7,10 @@ import { ConverterEngine, EngineConversionResult, EngineOptions } from './Conver
 const CONVERTAPI_BASE = 'https://v2.convertapi.com';
 
 /**
- * External conversion engine backed by a ConvertAPI-style provider.
+ * External conversion engine backed by two pluggable free-tier providers:
+ * ConvertAPI (primary for documents, images and PDFs) and CloudConvert
+ * (audio/video/7z, plus the automatic fallback for document pairs when
+ * ConvertAPI is unconfigured or out of quota).
  *
  * Serverless runtimes ship none of the system binaries the local engines need
  * (LibreOffice, ffmpeg, ghostscript, pdftoppm, 7z, pdf2docx). When
@@ -16,18 +19,24 @@ const CONVERTAPI_BASE = 'https://v2.convertapi.com';
  * makes a single synchronous provider call and pulls the result back into the
  * job workspace.
  *
- * The provider interface is intentionally pluggable: swapping ConvertAPI for
- * CloudConvert/pdf.co is a new provider module + a registry entry, nothing in
- * the processors changes. Free-tier quotas are account-specific — verify your
- * quota limits right after signup.
+ * The provider interface is intentionally pluggable: swapping or adding a
+ * provider (CloudConvert/pdf.co) is a provider module + a registry entry,
+ * nothing in the processors changes. Free-tier quotas are account-specific —
+ * verify your quota limits right after signup.
  */
 export class RemoteEngine implements ConverterEngine {
     name = 'Remote';
 
     canHandle(_sourceFormat: string, targetFormat: string): boolean {
         // Activation gate. The processor only consults this engine when
-        // CONVERTER_PROVIDER=remote; local engines keep their pairs.
-        return env.USE_REMOTE_ENGINE && !!env.CONVERTAPI_SECRET?.trim() && targetFormat !== '';
+        // CONVERTER_PROVIDER=remote; local engines keep their pairs. Either
+        // provider key is enough to activate it — CloudConvert alone can serve
+        // the document pairs too (see pickDocumentProvider's fallback).
+        return (
+            env.USE_REMOTE_ENGINE &&
+            targetFormat !== '' &&
+            (isProviderConfigured('convertapi') || isProviderConfigured('cloudconvert'))
+        );
     }
 
     async convert(
@@ -43,6 +52,8 @@ export class RemoteEngine implements ConverterEngine {
 
 const REMOTE_TIMEOUT_MS = Math.max(60_000, env.CONVERSION_TIMEOUT_MS || 180_000);
 
+export type RemoteProvider = 'convertapi' | 'cloudconvert';
+
 // Provider coverage, verified against ConvertAPI's live /info + canconvert
 // endpoints: ConvertAPI has NO audio or video support at all and cannot
 // convert between archive formats (only "anything -> zip" and "zip ->
@@ -52,21 +63,53 @@ const REMOTE_TIMEOUT_MS = Math.max(60_000, env.CONVERSION_TIMEOUT_MS || 180_000)
 // images and PDFs.
 const AUDIO_FORMATS = new Set(['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a']);
 const VIDEO_FORMATS = new Set(['mp4', 'mov', 'webm', 'avi', 'mkv']);
-const CLOUDCONVERT_FORMATS = new Set([...AUDIO_FORMATS, ...VIDEO_FORMATS]);
+const CLOUDCONVERT_ONLY_FORMATS = new Set([...AUDIO_FORMATS, ...VIDEO_FORMATS]);
 
 /**
  * Pure category router — exported so the mapping is unit-testable without
- * network access. 'cloudconvert' handles audio/video and any 7z pair;
- * 'convertapi' handles documents, images, PDFs and zip/tar/tar.gz pairs.
+ * network access. 'cloudconvert' handles audio/video and any 7z pair (the
+ * categories ConvertAPI cannot do); 'convertapi' handles documents, images,
+ * PDFs and zip/tar/tar.gz pairs. Documents also fall back to CloudConvert at
+ * runtime when ConvertAPI is unavailable (see pickDocumentProvider).
  */
 export function selectRemoteProvider(sourceFormat: string, targetFormat: string): 'cloudconvert' | 'convertapi' {
-    if (CLOUDCONVERT_FORMATS.has(sourceFormat) || CLOUDCONVERT_FORMATS.has(targetFormat)) {
+    if (CLOUDCONVERT_ONLY_FORMATS.has(sourceFormat) || CLOUDCONVERT_ONLY_FORMATS.has(targetFormat)) {
         return 'cloudconvert';
     }
     if (sourceFormat === '7z' || targetFormat === '7z') {
         return 'cloudconvert';
     }
     return 'convertapi';
+}
+
+export const isProviderConfigured = (provider: RemoteProvider): boolean =>
+    provider === 'convertapi'
+        ? !!env.CONVERTAPI_SECRET?.trim()
+        : !!env.CLOUDCONVERT_API_KEY?.trim();
+
+/**
+ * The document/image/PDF provider to try first. ConvertAPI stays preferred
+ * while its key is configured: it is today's production path and its output
+ * (notably pdf -> docx) is what users rely on. CloudConvert takes over when
+ * the ConvertAPI key is gone.
+ */
+export function pickDocumentProvider(args: { convertApiAvailable: boolean; cloudConvertAvailable: boolean }): RemoteProvider {
+    return args.convertApiAvailable ? 'convertapi' : 'cloudconvert';
+}
+
+// Provider-side failures a fallback provider can absorb: authentication /
+// account problems (401, 403), out-of-quota or expired trial (402), rate
+// limiting (429) and provider outages (5xx). Conversion-rejection errors
+// (400, 404, ...) are NOT absorbed — the file itself is bad or the pair is
+// unsupported, so another provider would fail the same way (and burn a
+// billable call).
+const CAPACITY_STATUS_CODES = new Set([401, 402, 403, 429]);
+export function isProviderCapacityError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    const match = /\((\d{3})\)/.exec(message);
+    if (!match) return false;
+    const status = Number(match[1]);
+    return CAPACITY_STATUS_CODES.has(status) || (status >= 500 && status <= 599);
 }
 
 function requireSecret(): string {
@@ -80,19 +123,31 @@ function requireSecret(): string {
 /**
  * Convert a file through the external provider.
  *
+ * Audio/video/7z pairs always use CloudConvert (ConvertAPI cannot do them).
+ * Documents, images and PDFs prefer ConvertAPI — today's production path whose
+ * output quality (pdf -> docx etc.) is deliberately kept — and automatically
+ * fall back to CloudConvert when the ConvertAPI key is absent or its account
+ * is out of capacity (quota exhausted, trial expired, rate limited, outage).
+ *
  * Multi-page image targets (jpg/png/webp) from a non-PDF source are produced
  * by chaining source -> pdf -> images: the provider returns one file per page
  * in that mode, which is what the on-disk pdftoppm pipeline also produces.
  * All saved paths are returned; `outputPath` is the first page.
+ *
+ * @param provider when set, pins the provider for this call and any chained
+ * steps (used by the fallback path so an in-flight chain does not bounce
+ * between providers).
  */
-export async function convertViaRemoteApi(args: {
-    inputPath: string;
-    outputDir: string;
-    sourceFormat: string;
-    targetFormat: string;
-    options?: EngineOptions;
-}): Promise<EngineConversionResult & { imagePaths?: string[] }> {
-    const startedAt = Date.now();
+export async function convertViaRemoteApi(
+    args: {
+        inputPath: string;
+        outputDir: string;
+        sourceFormat: string;
+        targetFormat: string;
+        options?: EngineOptions;
+    },
+    provider?: RemoteProvider
+): Promise<EngineConversionResult & { imagePaths?: string[] }> {
     const { inputPath, outputDir, sourceFormat, targetFormat, options } = args;
 
     // tsv has no ConvertAPI converter (canconvert tsv/to/pdf is a 404), but
@@ -103,7 +158,7 @@ export async function convertViaRemoteApi(args: {
         const csvPath = path.join(path.dirname(inputPath), `${path.basename(inputPath, path.extname(inputPath))}.csv`);
         await fs.writeFile(csvPath, csv);
         try {
-            return await convertViaRemoteApi({ ...args, inputPath: csvPath, sourceFormat: 'csv' });
+            return await convertViaRemoteApi({ ...args, inputPath: csvPath, sourceFormat: 'csv' }, provider);
         } finally {
             await fs.rm(csvPath, { force: true }).catch(() => {});
         }
@@ -116,42 +171,99 @@ export async function convertViaRemoteApi(args: {
         const pngPath = path.join(path.dirname(inputPath), `${path.basename(inputPath, '.avif')}.png`);
         await sharp(inputPath).png().toFile(pngPath);
         try {
-            return await convertViaRemoteApi({ ...args, inputPath: pngPath, sourceFormat: 'png' });
+            return await convertViaRemoteApi({ ...args, inputPath: pngPath, sourceFormat: 'png' }, provider);
         } finally {
             await fs.rm(pngPath, { force: true }).catch(() => {});
         }
     }
 
+    // Audio / video / 7z are CloudConvert-only categories (ConvertAPI cannot
+    // perform them at all), so they never bounce to ConvertAPI.
     if (selectRemoteProvider(sourceFormat, targetFormat) === 'cloudconvert') {
+        if (provider !== undefined && provider !== 'cloudconvert') {
+            throw new Error(
+                `Conversion ${sourceFormat}->${targetFormat} is only available through CloudConvert.`
+            );
+        }
         const { convertViaCloudConvert } = await import('./CloudConvertEngine.js');
         return convertViaCloudConvert({ inputPath, outputDir, sourceFormat, targetFormat, options });
     }
 
+    // Documents, images and PDFs.
+    const preferred = provider ?? pickDocumentProvider({
+        convertApiAvailable: isProviderConfigured('convertapi'),
+        cloudConvertAvailable: isProviderConfigured('cloudconvert'),
+    });
+
+    if (preferred === 'convertapi') {
+        try {
+            return await convertDocImageViaRemote(args, 'convertapi');
+        } catch (err) {
+            if (!isProviderCapacityError(err) || !isProviderConfigured('cloudconvert')) {
+                throw err;
+            }
+            logger.warn(
+                { sourceFormat, targetFormat, error: (err as Error).message },
+                'ConvertAPI unavailable (quota/account); retrying conversion through CloudConvert.'
+            );
+            return convertDocImageViaRemote(args, 'cloudconvert');
+        }
+    }
+
+    if (isProviderConfigured('cloudconvert')) {
+        return convertDocImageViaRemote(args, 'cloudconvert');
+    }
+    throw new Error('CONVERTER_PROVIDER=remote requires CONVERTAPI_SECRET or CLOUDCONVERT_API_KEY.');
+}
+
+async function convertDocImageViaRemote(
+    args: {
+        inputPath: string;
+        outputDir: string;
+        sourceFormat: string;
+        targetFormat: string;
+        options?: EngineOptions;
+    },
+    provider: RemoteProvider
+): Promise<EngineConversionResult & { imagePaths?: string[] }> {
+    const { inputPath, outputDir, sourceFormat, targetFormat, options } = args;
+
     const IMAGE_TARGETS = new Set(['jpg', 'jpeg', 'png', 'webp']);
-    // Sources with a DIRECT ConvertAPI converter for image targets: calling
-    // them directly is one billable conversion instead of source->pdf->image
-    // (two). The remaining sources (office, epub, tsv-derived csv...) chain.
+    // Sources with a DIRECT converter for image targets: calling them directly
+    // is one billable conversion instead of source->pdf->image (two). The
+    // remaining sources (office, epub, tsv-derived csv...) chain.
     const DIRECT_IMAGE_SOURCES = new Set(['pdf', 'jpg', 'jpeg', 'png', 'webp', 'bmp', 'heic', 'heif', 'ico']);
     if (IMAGE_TARGETS.has(targetFormat) && !DIRECT_IMAGE_SOURCES.has(sourceFormat)) {
-        const pdfStep = await convertViaRemoteApi({
-            inputPath,
-            outputDir,
-            sourceFormat,
-            targetFormat: 'pdf',
-            options,
-        });
+        const pdfStep = await convertViaRemoteApi(
+            { inputPath, outputDir, sourceFormat, targetFormat: 'pdf', options },
+            provider
+        );
         try {
-            return await convertViaRemoteApi({
-                inputPath: pdfStep.outputPath,
-                outputDir,
-                sourceFormat: 'pdf',
-                targetFormat,
-                options,
-            });
+            return await convertViaRemoteApi(
+                { inputPath: pdfStep.outputPath, outputDir, sourceFormat: 'pdf', targetFormat, options },
+                provider
+            );
         } finally {
             await fs.rm(pdfStep.outputPath, { force: true }).catch(() => {});
         }
     }
+
+    if (provider === 'cloudconvert') {
+        const { convertViaCloudConvert } = await import('./CloudConvertEngine.js');
+        return convertViaCloudConvert({ inputPath, outputDir, sourceFormat, targetFormat, options });
+    }
+    return convertViaConvertApiDirect(args);
+}
+
+async function convertViaConvertApiDirect(args: {
+    inputPath: string;
+    outputDir: string;
+    sourceFormat: string;
+    targetFormat: string;
+    options?: EngineOptions;
+}): Promise<EngineConversionResult & { imagePaths?: string[] }> {
+    const startedAt = Date.now();
+    const { inputPath, outputDir, sourceFormat, targetFormat, options } = args;
 
     const secret = requireSecret();
 

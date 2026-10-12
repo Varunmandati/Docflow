@@ -99,12 +99,11 @@ const EnvSchema = z.object({
     QSTASH_SIGNING_KEY: z.string().optional(),
     QSTASH_SIGNING_KEY_NEXT: z.string().optional(),
 
-    // External conversion API (CONVERTER_PROVIDER=remote).
+    // External conversion APIs (CONVERTER_PROVIDER=remote). At least one key
+    // is required. ConvertAPI is the primary document/PDF/office provider;
+    // CloudConvert covers audio/video/7z and is the automatic fallback when
+    // the ConvertAPI quota is exhausted or its key is removed.
     CONVERTAPI_SECRET: z.string().optional(),
-    // Second provider: audio, video and 7z pairs. ConvertAPI has no A/V
-    // support and cannot convert between archive formats, so those categories
-    // route to CloudConvert (optional — only needed if those features are
-    // used; missing key surfaces a clear per-job error).
     CLOUDCONVERT_API_KEY: z.string().optional(),
     CLOUDCONVERT_BASE_URL: z.string().default('https://api.cloudconvert.com/v2'),
 
@@ -200,8 +199,10 @@ function assertProductionInvariants(config: typeof parsed): void {
         }
     }
 
-    if (config.CONVERTER_PROVIDER === 'remote' && !config.CONVERTAPI_SECRET?.trim()) {
-        problems.push('CONVERTER_PROVIDER=remote requires CONVERTAPI_SECRET.');
+    if (config.CONVERTER_PROVIDER === 'remote' && !config.CONVERTAPI_SECRET?.trim() && !config.CLOUDCONVERT_API_KEY?.trim()) {
+        problems.push(
+            'CONVERTER_PROVIDER=remote requires at least one provider key: CONVERTAPI_SECRET or CLOUDCONVERT_API_KEY.',
+        );
     }
 
     if (config.QUEUE_BACKEND === 'qstash' && config.RUN_INLINE_WORKERS === 'true') {

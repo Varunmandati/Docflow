@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import type { PngOptions } from 'sharp';
 import { env } from '../config/env.js';
+import { logger } from '../config/logger.js';
 import { CompressionJobData, CompressionResult } from '../models/types.js';
 import { executeCommand } from './command.service.js';
 import { analyzeCompressionInput } from './compression-analyzer.service.js';
@@ -139,14 +140,42 @@ async function compressPdf(inputPath: string, outputPath: string, quality: numbe
     // the PDF is compressed by the external provider instead (same DPI
     // mapping as the gs pipeline below).
     if (env.USE_REMOTE_ENGINE) {
-        const { compressViaRemoteApi } = await import('./converters/RemoteEngine.js');
-        // The remote provider names its output `${base}_compressed.<ext>`, which
-        // can collide with (or overwrite) the caller's expected outputPath — and
-        // our sibling quality-preserved run uses the same name. Download into an
-        // ephemeral subdir so each call's result is distinct, then move it.
+        // Serverless runtimes have no ghostscript, so the PDF is compressed by
+        // an external provider instead (same DPI/quality mapping as the gs
+        // pipeline below). ConvertAPI stays the primary; CloudConvert takes
+        // over when ConvertAPI is unconfigured or out of quota, so PDF
+        // compression keeps working after the ConvertAPI trial ends.
+        const { compressViaRemoteApi, isProviderConfigured, isProviderCapacityError } =
+            await import('./converters/RemoteEngine.js');
+        // The provider names its output `${base}_compressed.<ext>`, which can
+        // collide with (or overwrite) the caller's expected outputPath — and
+        // our sibling quality-preserved run uses the same name. Download into
+        // an ephemeral subdir so each call's result is distinct, then move it.
         const remoteDir = await fs.mkdtemp(path.join(path.dirname(outputPath), '.compress-'));
         try {
-            const remotePath = await compressViaRemoteApi(inputPath, remoteDir, quality);
+            let remotePath: string;
+            if (isProviderConfigured('convertapi')) {
+                try {
+                    remotePath = await compressViaRemoteApi(inputPath, remoteDir, quality);
+                } catch (err) {
+                    if (!isProviderCapacityError(err) || !isProviderConfigured('cloudconvert')) {
+                        throw err;
+                    }
+                    const { compressViaCloudConvert } = await import('./converters/CloudConvertEngine.js');
+                    logger.warn(
+                        { error: (err as Error).message },
+                        'ConvertAPI unavailable; retrying PDF compression through CloudConvert.'
+                    );
+                    remotePath = await compressViaCloudConvert(inputPath, remoteDir, quality);
+                }
+            } else if (isProviderConfigured('cloudconvert')) {
+                const { compressViaCloudConvert } = await import('./converters/CloudConvertEngine.js');
+                remotePath = await compressViaCloudConvert(inputPath, remoteDir, quality);
+            } else {
+                throw new Error(
+                    'CONVERTER_PROVIDER=remote requires CONVERTAPI_SECRET or CLOUDCONVERT_API_KEY to compress PDFs.'
+                );
+            }
             await fs.copyFile(remotePath, outputPath);
         } finally {
             await fs.rm(remoteDir, { recursive: true, force: true }).catch(() => {});

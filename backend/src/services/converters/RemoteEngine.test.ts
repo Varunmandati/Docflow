@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectRemoteProvider, tsvToCsv } from './RemoteEngine';
+import { selectRemoteProvider, tsvToCsv, pickDocumentProvider, isProviderCapacityError } from './RemoteEngine';
 import { mapCloudConvertFormat } from './CloudConvertEngine';
 
 describe('selectRemoteProvider (category routing)', () => {
@@ -34,6 +34,33 @@ describe('selectRemoteProvider (category routing)', () => {
         expect(selectRemoteProvider('avif', 'pdf')).toBe('convertapi');
         expect(selectRemoteProvider('svg', 'pdf')).toBe('convertapi');
         expect(selectRemoteProvider('epub', 'pdf')).toBe('convertapi');
+    });
+});
+
+describe('pickDocumentProvider (fallback gate)', () => {
+    it('prefers convertapi while it is configured — preserves today\'s pdf->docx path', () => {
+        expect(pickDocumentProvider({ convertApiAvailable: true, cloudConvertAvailable: true })).toBe('convertapi');
+        expect(pickDocumentProvider({ convertApiAvailable: true, cloudConvertAvailable: false })).toBe('convertapi');
+    });
+
+    it('hands documents to cloudconvert when convertapi is not configured', () => {
+        expect(pickDocumentProvider({ convertApiAvailable: false, cloudConvertAvailable: true })).toBe('cloudconvert');
+    });
+});
+
+describe('isProviderCapacityError (fallback trigger)', () => {
+    it('falls back on quota / auth / rate / outage responses', () => {
+        expect(isProviderCapacityError(new Error('Remote conversion pdf->docx failed (402): out of credits'))).toBe(true);
+        expect(isProviderCapacityError(new Error('Remote conversion pdf->docx failed (429): rate limited'))).toBe(true);
+        expect(isProviderCapacityError(new Error('Remote conversion pdf->docx failed (401): invalid token'))).toBe(true);
+        expect(isProviderCapacityError(new Error('Remote conversion pdf->docx failed (403): forbidden'))).toBe(true);
+        expect(isProviderCapacityError(new Error('Remote conversion pdf->docx failed (500): provider error'))).toBe(true);
+    });
+
+    it('does NOT fall back on conversion/validation failures', () => {
+        expect(isProviderCapacityError(new Error('Remote conversion pdf->docx failed (400): corrupt file'))).toBe(false);
+        expect(isProviderCapacityError(new Error('Remote conversion pdf->docx failed (404): unsupported pair'))).toBe(false);
+        expect(isProviderCapacityError(new Error('network down'))).toBe(false);
     });
 });
 

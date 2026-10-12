@@ -39,7 +39,7 @@ async function apiFetch(url: string, init: RequestInit): Promise<Response> {
     const key = env.CLOUDCONVERT_API_KEY?.trim();
     if (!key) {
         throw new Error(
-            'This conversion (audio, video, or 7z) requires the CloudConvert provider: set CLOUDCONVERT_API_KEY.'
+            'This conversion requires the CloudConvert provider, but CLOUDCONVERT_API_KEY is not set.'
         );
     }
     return fetch(url, {
@@ -63,9 +63,11 @@ function describeJobFailure(job: CloudConvertJob): string {
 }
 
 /**
- * Convert audio/video/7z pairs through CloudConvert (the second free-tier
- * provider). ConvertAPI has no audio or video support and cannot convert
- * between archive formats, so the processor routes those categories here.
+ * Convert audio/video/7z pairs — and, as a fallback provider, document/image/
+ * PDF pairs — through CloudConvert. ConvertAPI has no audio or video support
+ * and cannot convert between archive formats, so those categories always
+ * route here; document pairs route here when ConvertAPI is unconfigured or
+ * out of quota (see RemoteEngine's provider selection).
  *
  * Flow: create job (import/upload + convert + export/url) -> PUT the bytes
  * onto the signed upload link -> block on GET /jobs/{id}?wait=true -> pull
@@ -148,6 +150,7 @@ export async function convertViaCloudConvert(args: {
     }
 
     const baseName = path.basename(inputPath, path.extname(inputPath));
+    const saved: string[] = [];
     let outputPath = '';
     let sizeBytes = 0;
     for (let i = 0; i < files.length; i++) {
@@ -160,11 +163,15 @@ export async function convertViaCloudConvert(args: {
         const ext =
             (entry.filename || '').split('.').pop() ||
             mapCloudConvertFormat(targetFormat);
+        // Multi-file outputs (pdf -> jpg/png, one image per page) use the same
+        // -page-N naming as the local and ConvertAPI pipelines so consumers see
+        // a consistent page-image set.
         const outPath =
             files.length === 1
                 ? path.join(outputDir, `${baseName}.${ext}`)
-                : path.join(outputDir, `${baseName}-${i + 1}.${ext}`);
+                : path.join(outputDir, `${baseName}-page-${i + 1}.${ext}`);
         await fs.writeFile(outPath, bytes);
+        saved.push(outPath);
         if (i === 0) {
             outputPath = outPath;
             sizeBytes = bytes.length;
@@ -176,9 +183,111 @@ export async function convertViaCloudConvert(args: {
         'CloudConvert conversion completed'
     );
 
-    return {
+    const result: EngineConversionResult & { imagePaths?: string[] } = {
         outputPath,
         sizeBytes,
         durationMs: Date.now() - startedAt,
     };
+    if (saved.length > 1) {
+        result.pages = saved.length;
+        result.imagePaths = saved;
+    }
+    return result;
+}
+
+/**
+ * Compress a PDF through CloudConvert's optimize operation (its Compress PDF
+ * API). Used when CONVERTER_PROVIDER=remote and ConvertAPI is unconfigured or
+ * out of quota — serverless runtimes have no ghostscript, so PDF compression
+ * needs a real renderer.
+ *
+ * The quality knob (1-100) maps onto CloudConvert's optimization profiles:
+ * high quality keeps print fidelity, mid optimizes for web, low goes for
+ * maximum reduction — mirroring the local ghostscript DPI mapping.
+ */
+export async function compressViaCloudConvert(
+    inputPath: string,
+    outputDir: string,
+    quality: number
+): Promise<string> {
+    const startedAt = Date.now();
+    const base = (env.CLOUDCONVERT_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
+    const profile = quality >= 90 ? 'print' : quality >= 78 ? 'web' : 'max';
+
+    const fileName = path.basename(inputPath);
+    const jobBody = {
+        tasks: {
+            'import-file': { operation: 'import/upload', file: fileName },
+            'compress-file': {
+                operation: 'optimize',
+                input: 'import-file',
+                input_format: 'pdf',
+                profile,
+            },
+            'export-file': { operation: 'export/url', input: 'compress-file' },
+        },
+    };
+
+    const createRes = await apiFetch(`${base}/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(jobBody),
+    });
+    if (!createRes.ok) {
+        const detail = await createRes.text().catch(() => '');
+        throw new Error(`CloudConvert compress job creation failed (${createRes.status}): ${detail.slice(0, 400)}`);
+    }
+    const created = (await createRes.json()) as CloudConvertJob;
+    const jobId = created.data?.id;
+    if (!jobId) {
+        throw new Error('CloudConvert compress job creation returned no job id.');
+    }
+
+    const importTask = (created.data?.tasks ?? []).find((t) => t.operation === 'import/upload');
+    const uploadUrl = importTask?.links?.put;
+    if (!uploadUrl) {
+        throw new Error('CloudConvert compress import task returned no upload link.');
+    }
+
+    const fileBytes = await fs.readFile(inputPath);
+    const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array(fileBytes),
+        signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS),
+    });
+    if (!putRes.ok) {
+        throw new Error(`CloudConvert compress upload failed (${putRes.status}).`);
+    }
+
+    const waitRes = await apiFetch(`${base}/jobs/${jobId}?wait=true`, { method: 'GET' });
+    if (!waitRes.ok) {
+        const detail = await waitRes.text().catch(() => '');
+        throw new Error(`CloudConvert compress job wait failed (${waitRes.status}): ${detail.slice(0, 400)}`);
+    }
+    const finished = (await waitRes.json()) as CloudConvertJob;
+    if (finished.data?.status === 'error') {
+        throw new Error(`CloudConvert PDF compression failed: ${describeJobFailure(finished)}`);
+    }
+
+    const exportTask = (finished.data?.tasks ?? []).find(
+        (t) => t.operation === 'export/url' && t.status === 'finished'
+    );
+    const files = exportTask?.result?.files ?? [];
+    if (files.length === 0 || !files[0].url) {
+        throw new Error('CloudConvert compress returned no files.');
+    }
+
+    const dl = await fetch(files[0].url, { signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS) });
+    if (!dl.ok) {
+        throw new Error(`CloudConvert compress result download failed (${dl.status}).`);
+    }
+    const bytes = Buffer.from(await dl.arrayBuffer());
+    const baseName = path.basename(inputPath, path.extname(inputPath));
+    const outExt = (files[0].filename || 'compressed.pdf').split('.').pop() || 'pdf';
+    const outPath = path.join(outputDir, `${baseName}_compressed.${outExt}`);
+    await fs.writeFile(outPath, bytes);
+
+    logger.info({ profile, quality, durationMs: Date.now() - startedAt }, 'CloudConvert compression completed');
+    return outPath;
 }
