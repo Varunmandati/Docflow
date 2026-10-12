@@ -76,8 +76,7 @@ docflow/
 │   │   ├── models/               # Data models
 │   │   ├── queue/                # BullMQ job definitions
 │   │   └── types/                # TypeScript type definitions
-│   ├── Dockerfile                # Production container image
-│   └── docker-compose.yml        # Full stack orchestration
+│   └── docker-compose.yml        # Local Postgres + Redis for development
 ```
 
 ---
@@ -210,9 +209,9 @@ inquiries.
 
 ## 🚀 Deployment
 
-DocFlow ships ready for two deployment styles.
+DocFlow deploys to **Vercel** (serverless).
 
-### Option A — Vercel (serverless, this repo's default)
+### Vercel (serverless, this repo's default)
 
 The React SPA is the frontend and the Fastify API runs as a serverless function
 (`/api/backend`). `vercel.json` rewrites `/v1/*` and `/health` to the backend,
@@ -230,16 +229,7 @@ Serverless mode is toggled with `USE_REMOTE_ENGINE=true` and
 and converted files are stored in the remote bucket set by `STORAGE_ROOT`.
 Scale-to-zero means the first request after idle is a cold start.
 
-### Option B — one always-on container
-
-One Docker image carries the React SPA and the Fastify API with inline queue
-workers, so a single service runs the whole product. Only port `8080` is
-exposed. The stack is wired by [`docker-compose.yml`](docker-compose.yml),
-configured by [`.env.production.example`](.env.production.example), and a free
-Render web service using this image is described in
-[`DEPLOYMENT.md`](DEPLOYMENT.md) and wired by [`render.yaml`](render.yaml).
-
-### Environment variables (shared by both options)
+### Environment variables
 
 | Variable | Required | Notes |
 |----------|----------|-------|
@@ -249,13 +239,13 @@ Render web service using this image is described in
 | `RESEND_API_KEY`, `EMAIL_FROM` | yes | OTP + transactional email over HTTPS |
 | `QSTASH_TOKEN`, `QSTASH_SIGNING_KEY`, `QSTASH_SIGNING_KEY_NEXT` | Vercel | QStash queue for background jobs |
 | `CONVERTAPI_SECRET`, `CLOUDCONVERT_API_KEY` | yes | 3rd-party conversion / compression APIs |
-| `LOCAL_REDIS=true` | container | in-container Redis, no external quota |
 
 ---
 
-## 🐳 Docker Deployment
+## 🐳 Local development stack
 
-The project includes production-ready Docker configuration:
+`backend/docker-compose.yml` provides PostgreSQL + Redis (and optionally the API
+and worker) for local development:
 
 ```yaml
 # backend/docker-compose.yml
@@ -309,8 +299,8 @@ docker compose down
 - **jsonwebtoken** — JWT-based auth tokens
 
 ### DevOps
-- **Docker + Docker Compose** — Container orchestration
-- **Multi-stage Dockerfile** — Optimized production images
+- **Vercel** — serverless hosting for the SPA + API
+- **Docker + Docker Compose** — local PostgreSQL + Redis for development
 
 ---
 
