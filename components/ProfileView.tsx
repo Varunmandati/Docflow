@@ -6,6 +6,7 @@ import { CheckIcon, LogoutIcon, ProfileIcon } from './Icons';
 import { getCroppedImg } from '../services/profileImageService';
 import { authFetch } from '../services/authFetch';
 import { useToast } from '../hooks/useToast';
+import CharacterAvatar from './CharacterAvatar';
 
 interface ProfileViewProps {
     t: ProfileTranslation;
@@ -64,6 +65,12 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
+
+    // Only render a real <img> for genuine uploaded/provider photos. Anything
+    // absent (or a legacy placeholder URL) falls back to the initials avatar,
+    // so no demo/stock face is ever shown.
+    const hasRealAvatar = (url?: string | null): boolean =>
+        !!url && !url.includes('pravatar.cc') && !url.includes('placeholder');
 
     useEffect(() => {
         setName(userProfile.name);
@@ -263,11 +270,17 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
                     {/* Avatar */}
                     <div className="flex-shrink-0 text-center">
                         <label className="block caption-text font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>{t.avatar}</label>
-                        <img 
-                            className="w-28 h-28 rounded-full object-cover mx-auto ring-2 ring-[var(--border-color)] p-0.5" 
-                            src={avatarPreview || userProfile.avatarUrl} 
-                            alt="User avatar" 
-                        />
+                        {hasRealAvatar(avatarPreview || userProfile.avatarUrl) ? (
+                            <img 
+                                className="w-28 h-28 rounded-full object-cover mx-auto ring-2 ring-[var(--border-color)] p-0.5" 
+                                src={(avatarPreview || userProfile.avatarUrl) as string} 
+                                alt="User avatar" 
+                            />
+                        ) : (
+                            <div className="flex justify-center">
+                                <CharacterAvatar name={userProfile.name || userProfile.email || 'User'} size={112} />
+                            </div>
+                        )}
                         <input
                             type="file"
                             ref={fileInputRef}

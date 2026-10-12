@@ -115,6 +115,9 @@ const App: React.FC = () => {
     const [history, setHistory] = useState<HistoryEntry[]>([]);
     const [historyInitialFilter, setHistoryInitialFilter] = useState<'failed' | 'success' | 'all'>('all');
     const [historyFilterNonce, setHistoryFilterNonce] = useState(0);
+    // Bumped whenever a conversion/compression finishes so the job list is
+    // re-fetched from the backend and reflects the work that just happened.
+    const [historyRefreshNonce, setHistoryRefreshNonce] = useState(0);
 
     // Fetch history from backend API when authenticated
     const fetchHistory = useCallback(async () => {
@@ -154,7 +157,7 @@ const App: React.FC = () => {
 
     useEffect(() => {
         fetchHistory();
-    }, [fetchHistory]);
+    }, [fetchHistory, historyRefreshNonce]);
 
     // Keep the history page in sync with real conversions/compressions: every
     // time the user opens the History tab (or a dashboard card navigates there)
@@ -164,6 +167,28 @@ const App: React.FC = () => {
             fetchHistory();
         }
     }, [activePage, isAuthenticated, fetchHistory]);
+
+    // Refresh the job list when the tab regains focus and, while the History
+    // page is open, on a short interval — so completed jobs show up without a
+    // manual reload.
+    useEffect(() => {
+        if (!isAuthenticated) return;
+        const onVisible = () => {
+            if (document.visibilityState === 'visible') fetchHistory();
+        };
+        window.addEventListener('focus', onVisible);
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            window.removeEventListener('focus', onVisible);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
+    }, [isAuthenticated, fetchHistory]);
+
+    useEffect(() => {
+        if (!isAuthenticated || activePage !== 'history') return;
+        const id = window.setInterval(fetchHistory, 15000);
+        return () => window.clearInterval(id);
+    }, [isAuthenticated, activePage, fetchHistory]);
 
     // Keep the URL route in sync with the active page, and react to the
     // browser back/forward buttons.
@@ -308,6 +333,8 @@ const App: React.FC = () => {
             }
             return newStats;
         });
+        // Pull the freshly-created backend job into the History list.
+        setHistoryRefreshNonce(n => n + 1);
     }, []);
 
     const handleNavigate = (page: Page) => {
@@ -370,7 +397,9 @@ const App: React.FC = () => {
         setUserProfile({
             name: payload.name,
             email: payload.email,
-            avatarUrl: payload.avatarUrl || `https://i.pravatar.cc/150?u=${encodeURIComponent(payload.email)}`,
+            // Never fabricate a random demo face. When the provider gives no
+            // photo, the UI renders the user's initials instead.
+            avatarUrl: payload.avatarUrl || '',
         });
         setIsAuthenticated(true);
         setIsAuthModalOpen(false);

@@ -31,8 +31,8 @@ const describeGoogleError = (err: unknown): string => {
 	const code = (err as { code?: string })?.code || '';
 	const raw = (err as Error)?.message || '';
 
-	if (/organization|admin|restricted|out of org/i.test(raw)) {
-		return 'Google sign-in is restricted by the organization that owns this Firebase project. Open Firebase Console → Authentication → Sign-in method and either allow all users or link this domain, or use the email OTP flow instead.';
+	if (/organization|admin|restricted|out of org|org_internal|internal/i.test(raw)) {
+		return 'Google sign-in is blocked: this Firebase project\'s OAuth consent screen is set to "Internal" (organization-only), so accounts outside the org are rejected. Fix it in Google Cloud Console → APIs & Services → OAuth consent screen: set "User type" to "External", then add your Google account under "Test users" (or Publish the app). Until then, please use the email OTP sign-in above.';
 	}
 
 	const friendly: Record<string, string> = {
