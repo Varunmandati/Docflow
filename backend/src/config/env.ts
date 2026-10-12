@@ -39,9 +39,9 @@ const EnvSchema = z.object({
     CORS_ORIGIN: z.string().default(''),
     RUN_INLINE_WORKERS: z.string().default('false'),
     // Deployment shape. "true" means one container runs the API and the queue
-    // workers in a single process (root Dockerfile, Render, Koyeb, fly, root
-    // docker-compose). Split deployments (deploy/oci) leave it unset: their API
-    // must not run workers inline because a dedicated worker container does.
+    // workers in a single process (root Dockerfile, Render, root
+    // docker-compose). With a dedicated worker process/container it stays
+    // unset so the API never runs workers inline.
     SINGLE_CONTAINER: z.string().default('false'),
     SMTP_HOST: z.string().default('smtp.gmail.com'),
     SMTP_PORT: z.coerce.number().int().positive().default(587),
@@ -219,8 +219,7 @@ function assertProductionInvariants(config: typeof parsed): void {
         throw new Error(
             'Refusing to start in production with an unsafe configuration:\n' +
             problems.map((p) => `  - ${p}`).join('\n') +
-            '\n\nSee deploy/oci/.env.example (split deployments) or .env.production.example ' +
-            '(all-in-one deployments) for the required production values.',
+            '\n\nSee .env.production.example for the required production values.',
         );
     }
 }

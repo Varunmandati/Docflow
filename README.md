@@ -208,44 +208,38 @@ inquiries.
 
 ---
 
-## 🚀 Deployment (one container, one port)
+## 🚀 Deployment
 
-One Docker image carries the React SPA and the Fastify API with inline queue
-workers, so a single service runs the whole product. The API serves the SPA
-itself, so only port `8080` is ever exposed. The stack is
-wired up by [`docker-compose.yml`](docker-compose.yml) and configured by
-[`.env.production.example`](.env.production.example).
+DocFlow ships ready for two deployment styles.
 
-### Option A — own VM, always-on, $0/month (recommended)
+### Option A — Vercel (serverless, this repo's default)
 
-Oracle Cloud **Always Free** gives an Ubuntu VM (2 OCPU / 12 GB ARM, ~10 TB
-egress per month) that never sleeps — right for conversion jobs that must keep
-running unattended. The card at signup is
-verification only; Always Free resources are never charged.
+The React SPA is the frontend and the Fastify API runs as a serverless function
+(`/api/backend`). `vercel.json` rewrites `/v1/*` and `/health` to the backend,
+and every other path — including the clean routes `/dashboard`, `/converter`,
+`/compress`, `/extract`, `/history`, `/settings`, `/profile` — to the SPA, so
+each page is a real shareable URL.
 
 ```bash
-ssh ubuntu@<your-vm-ip>
-sudo bash deploy/oracle/setup.sh      # 1st run: installs Docker, writes .env, stops
-nano /opt/docflow/.env                # fill in Neon / Resend / Firebase
-sudo bash deploy/oracle/setup.sh      # 2nd run: builds the image and starts
+npm install
+vercel --prod --yes        # build + deploy from the repo root
 ```
 
-Full walkthrough (VM shape, firewall rules, HTTPS, cost guardrails):
-[ORACLE_DEPLOYMENT.md](ORACLE_DEPLOYMENT.md)
+Serverless mode is toggled with `USE_REMOTE_ENGINE=true` and
+`IS_QSTASH_QUEUE=true` (Vercel project environment); jobs are queued via QStash
+and converted files are stored in the remote bucket set by `STORAGE_ROOT`.
+Scale-to-zero means the first request after idle is a cold start.
 
-### Option B — Koyeb free instance
+### Option B — one always-on container
 
-[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&builder=dockerfile&repository=github.com%2FVarunmandati%2FDocflow&branch=main&name=docflow)
+One Docker image carries the React SPA and the Fastify API with inline queue
+workers, so a single service runs the whole product. Only port `8080` is
+exposed. The stack is wired by [`docker-compose.yml`](docker-compose.yml),
+configured by [`.env.production.example`](.env.production.example), and a free
+Render web service using this image is described in
+[`DEPLOYMENT.md`](DEPLOYMENT.md) and wired by [`render.yaml`](render.yaml).
 
-1. Click the button (Koyeb builds the repo's root `Dockerfile`).
-2. Open **Settings → Environment Variables** and paste every entry from
-   [`.env.production.example`](.env.production.example).
-3. **Redeploy.** `VITE_*` values are read at *build* time, so the first build
-   (which has no variables yet) has to be rebuilt once they exist.
-
-Details in [KOYEB_DEPLOYMENT.md](KOYEB_DEPLOYMENT.md).
-
-### Environment variables both paths need
+### Environment variables (shared by both options)
 
 | Variable | Required | Notes |
 |----------|----------|-------|
@@ -253,16 +247,9 @@ Details in [KOYEB_DEPLOYMENT.md](KOYEB_DEPLOYMENT.md).
 | `FIREBASE_SERVICE_ACCOUNT` | yes | single-line JSON, powers Google sign-in |
 | `VITE_FIREBASE_API_KEY` … `_APP_ID` (6) | yes | public browser identifiers, inlined into the bundle |
 | `RESEND_API_KEY`, `EMAIL_FROM` | yes | OTP + transactional email over HTTPS |
-| `LOCAL_REDIS=true` | yes | in-container Redis, no external quota |
-
-Behaviour worth knowing:
-
-- On a VM the app runs 24/7 (`restart: unless-stopped`); Koyeb free instances
-  scale down after about an hour of idle, so the first request after idle is a
-  cold start.
-- The existing `render.yaml` and `vercel.json` are unchanged — deploying the
-  SPA on Vercel and the API elsewhere still works if you want the split: set
-  `VITE_API_BASE_URL` to the API URL and `CORS_ORIGIN` to the Vercel URL.
+| `QSTASH_TOKEN`, `QSTASH_SIGNING_KEY`, `QSTASH_SIGNING_KEY_NEXT` | Vercel | QStash queue for background jobs |
+| `CONVERTAPI_SECRET`, `CLOUDCONVERT_API_KEY` | yes | 3rd-party conversion / compression APIs |
+| `LOCAL_REDIS=true` | container | in-container Redis, no external quota |
 
 ---
 

@@ -18,8 +18,8 @@ const CONVERTAPI_BASE = 'https://v2.convertapi.com';
  *
  * The provider interface is intentionally pluggable: swapping ConvertAPI for
  * CloudConvert/pdf.co is a new provider module + a registry entry, nothing in
- * the processors changes. Free-tier quotas are account-specific — run the
- * smoke tests in SERVERLESS_VERCEL_DEPLOYMENT.md right after signup.
+ * the processors changes. Free-tier quotas are account-specific — verify your
+ * quota limits right after signup.
  */
 export class RemoteEngine implements ConverterEngine {
     name = 'Remote';

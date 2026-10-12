@@ -22,6 +22,29 @@ export type Page = 'dashboard' | 'upload' | 'compress' | 'extract' | 'history' |
 export type Theme = 'light' | 'dark' | 'system';
 export type Language = 'en' | 'hi' | 'bn' | 'te';
 
+// Every page has a real URL route (e.g. /dashboard, /converter, /history,
+// /compress, /profile, /settings, /extract). The catch-all rewrite in
+// vercel.json serves the SPA for all of them, and the URL is kept in sync via
+// pushState so browser back/forward and direct links work.
+export const PAGE_ROUTES: Record<Page, string> = {
+    dashboard: '/dashboard',
+    upload: '/converter',
+    compress: '/compress',
+    extract: '/extract',
+    history: '/history',
+    settings: '/settings',
+    profile: '/profile',
+};
+
+const ROUTE_TO_PAGE: Record<string, Page> = Object.fromEntries(
+    (Object.entries(PAGE_ROUTES) as Array<[Page, string]>).map(([page, route]) => [route, page])
+);
+
+const pathToPage = (): Page => {
+    const path = window.location.pathname.replace(/\/+$/, '');
+    return ROUTE_TO_PAGE[path] || 'dashboard';
+};
+
 export interface Stats {
     total: number;
     successful: number;
@@ -43,13 +66,13 @@ interface AuthSuccessPayload {
 }
 
 const defaultUserProfile: UserProfile = {
-    name: 'Alex Doe',
-    email: 'alex.doe@example.com',
-    avatarUrl: 'https://i.pravatar.cc/150?u=alex.doe@example.com',
+    name: '',
+    email: '',
+    avatarUrl: '',
 };
 
 const App: React.FC = () => {
-    const [activePage, setActivePage] = useState<Page>('dashboard');
+    const [activePage, setActivePage] = useState<Page>(() => pathToPage());
     const [initialFiles, setInitialFiles] = useState<File[]>([]);
     const [initialCompressFiles, setInitialCompressFiles] = useState<File[]>([]);
     
@@ -94,47 +117,68 @@ const App: React.FC = () => {
     const [historyFilterNonce, setHistoryFilterNonce] = useState(0);
 
     // Fetch history from backend API when authenticated
-    useEffect(() => {
+    const fetchHistory = useCallback(async () => {
         if (!isAuthenticated) {
-            // Clear history when logged out
             setHistory([]);
             return;
         }
 
-        let cancelled = false;
-        const fetchHistory = async () => {
-            try {
-                const response = await authFetch('/v1/jobs?limit=50');
-                if (!response.ok) return;
-                const data = await response.json();
-                if (cancelled || !data?.success || !data?.data) return;
+        try {
+            const response = await authFetch('/v1/jobs?limit=100');
+            if (!response.ok) return;
+            const data = await response.json();
+            if (!data?.success || !data?.data) return;
 
-                // Transform backend Job format to frontend HistoryEntry
-                const entries: HistoryEntry[] = data.data.map((job: any) => ({
-                    id: parseInt(job.id.replace(/-/g, '').slice(0, 8), 16) || Date.now(),
-                    name: job.input_filename || 'Unknown file',
-                    date: job.completed_at || job.queued_at || new Date().toISOString(),
-                    status: job.status === 'completed' ? 'Success' as const
-                        : job.status === 'failed' ? 'Failed' as const
-                        : 'Processing' as const,
-                    url: job.status === 'completed' && job.download_token
-                        ? `/v1/download/${job.download_token}`
-                        : undefined,
-                    type: job.job_type === 'compression' ? 'Compress' as const : 'Convert' as const,
-                    format: job.input_format && job.output_format
-                        ? `${String(job.input_format).toUpperCase()} → ${String(job.output_format).toUpperCase()}`
-                        : undefined,
-                }));
+            // Transform backend Job format to frontend HistoryEntry
+            const entries: HistoryEntry[] = data.data.map((job: any) => ({
+                id: parseInt(job.id.replace(/-/g, '').slice(0, 8), 16) || Date.now(),
+                name: job.input_filename || 'Unknown file',
+                date: job.completed_at || job.queued_at || new Date().toISOString(),
+                status: job.status === 'completed' ? 'Success' as const
+                    : job.status === 'failed' ? 'Failed' as const
+                    : 'Processing' as const,
+                url: job.status === 'completed' && job.download_token
+                    ? `/v1/download/${job.download_token}`
+                    : undefined,
+                type: job.job_type === 'compression' ? 'Compress' as const : 'Convert' as const,
+                format: job.input_format && job.output_format
+                    ? `${String(job.input_format).toUpperCase()} → ${String(job.output_format).toUpperCase()}`
+                    : undefined,
+            }));
 
-                setHistory(entries);
-            } catch (error) {
-                console.error('Failed to fetch history:', error);
-            }
-        };
-
-        fetchHistory();
-        return () => { cancelled = true; };
+            setHistory(entries);
+        } catch (error) {
+            console.error('Failed to fetch history:', error);
+        }
     }, [isAuthenticated]);
+
+    useEffect(() => {
+        fetchHistory();
+    }, [fetchHistory]);
+
+    // Keep the history page in sync with real conversions/compressions: every
+    // time the user opens the History tab (or a dashboard card navigates there)
+    // the job list is re-fetched so newly completed jobs appear immediately.
+    useEffect(() => {
+        if (activePage === 'history' && isAuthenticated) {
+            fetchHistory();
+        }
+    }, [activePage, isAuthenticated, fetchHistory]);
+
+    // Keep the URL route in sync with the active page, and react to the
+    // browser back/forward buttons.
+    useEffect(() => {
+        const route = PAGE_ROUTES[activePage];
+        if (window.location.pathname !== route) {
+            window.history.pushState(null, '', route);
+        }
+    }, [activePage]);
+
+    useEffect(() => {
+        const onPopState = () => setActivePage(pathToPage());
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
+    }, []);
     
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
         return localStorage.getItem('sidebarCollapsed') === 'true';

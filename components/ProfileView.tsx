@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Cropper from 'react-easy-crop';
 import { ProfileTranslation } from '../translations';
 import { UserProfile } from '../types';
-import { CheckIcon, LogoutIcon } from './Icons';
+import { CheckIcon, LogoutIcon, ProfileIcon } from './Icons';
 import { getCroppedImg } from '../services/profileImageService';
 import { authFetch } from '../services/authFetch';
 import { useToast } from '../hooks/useToast';
@@ -215,6 +215,38 @@ const ProfileView: React.FC<ProfileViewProps> = ({ t, userProfile, onSave, onLog
             addToast('Failed to save profile', 'error');
         }
     };
+
+    // Not signed in: ask for authentication before showing any profile data —
+    // never render demo/placeholder account details.
+    if (!isAuthenticated) {
+        return (
+            <div className="p-4 sm:p-8 w-full">
+                <header className="view-header">
+                    <div className="flex items-center gap-3">
+                        <h1 className="display-md">{t.title}</h1>
+                    </div>
+                    <p className="body-sm mt-1">Manage your personal profile and storage</p>
+                </header>
+
+                <div className="relative max-w-xl mx-auto panel-card p-10 elevation-4 text-center">
+                    <div className="card-sheen"></div>
+                    <div className="chip-icon mx-auto mb-5" style={{ width: '3.25rem', height: '3.25rem' }}>
+                        <ProfileIcon className="w-7 h-7" />
+                    </div>
+                    <h2 className="display-sm text-[var(--text-primary)] mb-2">You're not signed in</h2>
+                    <p className="body-sm text-[var(--text-secondary)] mb-6">
+                        Sign in or create an account to manage your profile, avatar, downloadable usage and stored files.
+                    </p>
+                    <button
+                        onClick={onAuthClick}
+                        className="glowing-btn pill-btn font-medium py-2.5 px-10 text-sm"
+                    >
+                        Sign In / Sign Up
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="p-4 sm:p-8 w-full">

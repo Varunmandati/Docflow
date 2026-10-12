@@ -76,9 +76,8 @@ async function listMigrationFiles(): Promise<string[]> {
 /**
  * Report applied vs pending migrations without changing anything.
  *
- * Used by deploy/oci/update.sh as a preflight so an upgrade can print the
- * starting schema state, and so a "migration failed" outcome is diagnosable
- * after the fact.
+ * Used as a preflight so an upgrade can print the starting schema state, and
+ * so a "migration failed" outcome is diagnosable after the fact.
  */
 export async function showMigrationStatus() {
   const migrationUrl = process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL || process.env.POSTGRES_ADMIN_URL;

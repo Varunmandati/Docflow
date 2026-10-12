@@ -24,6 +24,34 @@ const OTP_VERIFY_ENDPOINTS = ['/v1/auth/otp/verify'];
 
 const getApiBase = () => (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
+// Translate raw Firebase OAuth errors into actionable messages. Most "can't
+// sign in" failures are console settings, not app bugs, so the message must
+// say exactly what to change.
+const describeGoogleError = (err: unknown): string => {
+	const code = (err as { code?: string })?.code || '';
+	const raw = (err as Error)?.message || '';
+
+	if (/organization|admin|restricted|out of org/i.test(raw)) {
+		return 'Google sign-in is restricted by the organization that owns this Firebase project. Open Firebase Console → Authentication → Sign-in method and either allow all users or link this domain, or use the email OTP flow instead.';
+	}
+
+	const friendly: Record<string, string> = {
+		'auth/unauthorized-domain': `Google sign-in is not allowed from this domain. Add ${
+			window.location.origin || '(your site)'
+		} (and http://localhost:3000) in Firebase Console → Authentication → Settings → Authorized domains.`,
+		'auth/popup-blocked': 'Google sign-in was blocked by your browser. Allow pop-ups for this site and try again.',
+		'auth/popup-closed-by-user': 'You closed the Google sign-in window. Click Continue with Google when you are ready.',
+		'auth/cancelled-popup-request': 'The previous Google sign-in was cancelled. Try again.',
+		'auth/operation-not-allowed': 'Google sign-in is not enabled for this Firebase project. Enable the Google provider in Firebase Console → Authentication → Sign-in method.',
+		'auth/account-exists-with-different-credential': 'An account already exists for this email with a different sign-in method — try the email OTP flow instead.',
+		'auth/network-request-failed': 'Could not reach Google. Check your internet connection and try again.',
+	};
+
+	if (friendly[code]) return friendly[code];
+	if (raw) return `Google authentication failed: ${raw}`;
+	return 'Google authentication failed.';
+};
+
 const GoogleIcon: React.FC = () => (
 	<svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden="true">
 		<path fill="#EA4335" d="M12 10.2v3.9h5.4c-.2 1.3-1.6 3.9-5.4 3.9-3.2 0-5.9-2.7-5.9-6s2.7-6 5.9-6c1.8 0 3 .8 3.7 1.4l2.5-2.4C16.6 3.5 14.5 2.5 12 2.5 6.8 2.5 2.5 6.8 2.5 12s4.3 9.5 9.5 9.5c5.5 0 9.1-3.8 9.1-9.2 0-.6-.1-1.1-.2-1.6H12z" />
@@ -249,7 +277,8 @@ const AuthView: React.FC<AuthViewProps> = ({ isOpen, onClose, onAuthSuccess }) =
 			});
 			addToast('Google authentication successful.', 'success');
 		} catch (err) {
-			const message = err instanceof Error ? err.message : 'Google authentication failed.';
+			const message = describeGoogleError(err);
+			console.error('Google auth failed:', err);
 			setError(message);
 			addToast('Google authentication failed.', 'error');
 		} finally {
