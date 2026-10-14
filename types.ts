@@ -32,11 +32,14 @@ export interface BlockSpacing {
     before?: number;   // space before in twips (1/20 of a point)
     after?: number;    // space after in twips
     line?: number;     // line spacing in twips (240 = single, 360 = 1.5, 480 = double)
+    /** 'exact' treats `line` as an absolute twip height (measured PDF pitch);
+     *  'auto' (default) treats it as a multiple of single spacing (240 = 1x). */
+    lineRule?: 'exact' | 'auto';
 }
 
 /** One paragraph/block of a document, preserved from the source PDF layout. */
 export interface DocxBlock {
-    type: 'heading1' | 'heading2' | 'heading3' | 'body' | 'list' | 'spacer' | 'table_cell';
+    type: 'heading1' | 'heading2' | 'heading3' | 'body' | 'list' | 'spacer' | 'table_cell' | 'image';
     runs: DocxRun[];
     fontSize?: number;
     fontFamily?: string;
@@ -46,6 +49,32 @@ export interface DocxBlock {
     isBold?: boolean;
     isItalic?: boolean;
     fullWidth?: boolean;
+    /** Baseline y of the block's first line, PDF space (origin bottom-left, points). */
+    y?: number;
+    /** How many source visual lines collapsed into this block; used to sum the
+     * block's exact emitted height (line advance x lineCount + before). */
+    lineCount?: number;
+    /** Embedded raster image (type 'image'). width/height in PDF points. */
+    image?: { dataUrl: string; width: number; height: number };
+}
+
+/**
+ * One horizontal layout region of a page. A page can stack several regions
+ * with different column counts (e.g. an IEEE page: full-width title, then a
+ * 3-column author grid, then a 2-column body). Each region is detected and
+ * rendered independently so a multi-column header never contaminates the
+ * body's column gutters.
+ */
+export interface DocxSegment {
+    kind: 'linear' | 'columns';
+    /** Paragraph blocks for a single-column region. */
+    blocks?: DocxBlock[];
+    /** One array of blocks per column for a multi-column region. */
+    columns?: DocxBlock[][];
+    /** Full-width blocks rendered above the column table (captions, etc.). */
+    leadBlocks?: DocxBlock[];
+    /** X bounds of each column (PDF points) — used to place images per column. */
+    columnRanges?: { minX: number; maxX: number }[];
 }
 
 /** Page geometry extracted from the PDF. */
@@ -66,6 +95,7 @@ export interface PageInfo {
     text?: string[];
     docxBlocks?: DocxBlock[];
     docxColumnBlocks?: DocxBlock[][];
+    docxSegments?: DocxSegment[];
     columnCount?: number;
     pageGeometry?: PageGeometry;
 }

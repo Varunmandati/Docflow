@@ -84,6 +84,7 @@ export interface ConverterTranslation {
         suggestingName: string;
         creatingZip: string;
         signInRequired: string;
+        pdfDocxSignInRequired: string;
     },
     success: {
         title: string;
@@ -243,7 +244,8 @@ export const translations: { [key: string]: Translation } = {
                 error: 'Error during processing',
                 suggestingName: 'AI is suggesting a filename...',
                 creatingZip: 'Creating ZIP archive...',
-                signInRequired: 'Sign in is required to convert office documents.'
+                signInRequired: 'Sign in is required to convert office documents.',
+                pdfDocxSignInRequired: 'Sign in to convert PDF to Word with all formatting preserved.'
             },
             success: {
                 title: 'Processing Successful!',
@@ -430,7 +432,8 @@ export const translations: { [key: string]: Translation } = {
                 error: 'संसाधन के दौरान त्रुटि',
                 suggestingName: 'AI एक फ़ाइल नाम सुझा रहा है...',
                 creatingZip: 'ZIP संग्रह बनाया जा रहा है...',
-                signInRequired: 'ऑफिस दस्तावेज़ों को बदलने के लिए साइन इन करना आवश्यक है।'
+                signInRequired: 'ऑफिस दस्तावेज़ों को बदलने के लिए साइन इन करना आवश्यक है।',
+                pdfDocxSignInRequired: 'पूरी फ़ॉर्मैटिंग बनाए रखने के लिए PDF को Word में बदलने हेतु साइन इन करें।'
             },
             success: {
                 title: 'संसाधन सफल!',
@@ -617,7 +620,8 @@ export const translations: { [key: string]: Translation } = {
                 error: 'প্রসেসিং করার সময় ত্রুটি',
                 suggestingName: 'AI একটি ফাইলের নাম প্রস্তাব করছে...',
                 creatingZip: 'ZIP আর্কাইভ তৈরি হচ্ছে...',
-                signInRequired: 'অফিস ডকুমেন্ট রূপান্তর করতে সাইন ইন করা প্রয়োজন।'
+                signInRequired: 'অফিস ডকুমেন্ট রূপান্তর করতে সাইন ইন করা প্রয়োজন।',
+                pdfDocxSignInRequired: 'সম্পূর্ণ ফরম্যাটিং বজায় রেখে PDF-কে Word-এ রূপান্তর করতে সাইন ইন করুন।'
             },
             success: {
                 title: 'প্রসেসিং সফল!',
@@ -804,7 +808,8 @@ export const translations: { [key: string]: Translation } = {
                 error: 'లోపం సంభవించింది',
                 suggestingName: 'AI ఫైల్ పేరును సూచిస్తోంది...',
                 creatingZip: 'ZIP ఆర్కైవ్ సృష్టిస్తోంది...',
-                signInRequired: 'ఆఫీస్ పత్రాలను మార్చడానికి సైన్ ఇన్ అవసరం।'
+                signInRequired: 'ఆఫీస్ పత్రాలను మార్చడానికి సైన్ ఇన్ అవసరం।',
+                pdfDocxSignInRequired: 'పూర్తి ఫార్మాటింగ్ నిలుపుకోవడానికి PDFని Wordకి మార్చడానికి సైన్ ఇన్ చేయండి।'
             },
             success: {
                 title: 'విజయవంతమైంది!',

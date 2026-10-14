@@ -8,6 +8,7 @@
  */
 import { sendJson, BareResponse } from '../../backend/dist/serverless/http.js';
 import { cleanupExpiredJobs, cleanupExpiredOtps } from '../../backend/dist/workers/cleanup.worker.js';
+import { cleanupExpiredPdfDocxJobs } from '../../backend/dist/services/pdf-docx-job.service.js';
 import { env } from '../../backend/dist/config/env.js';
 
 export default async function handler(req: any, res: BareResponse): Promise<void> {
@@ -19,6 +20,7 @@ export default async function handler(req: any, res: BareResponse): Promise<void
 
     await cleanupExpiredOtps();
     await cleanupExpiredJobs();
+    const pdfDocxRemoved = await cleanupExpiredPdfDocxJobs();
 
-    return sendJson(res, 200, { ok: true, timestamp: new Date().toISOString() });
+    return sendJson(res, 200, { ok: true, pdfDocxRemoved, timestamp: new Date().toISOString() });
 }

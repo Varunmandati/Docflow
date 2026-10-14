@@ -890,12 +890,7 @@ const CompressorView: React.FC<CompressorViewProps> = ({ initialFiles, t, isAuth
                 }
             } catch (error) {
                 console.error(error);
-                addToast(
-                    !isAuthenticated
-                        ? 'Sign in for full compression of PDF/DOCX/ZIP/RAR files. Falling back to basic compression.'
-                        : 'Backend compression failed. Falling back to local compression.',
-                    'error'
-                );
+                addToast('Backend compression failed. Falling back to local compression.', 'error');
                 setStatusMessage(t.status.error);
             }
         }

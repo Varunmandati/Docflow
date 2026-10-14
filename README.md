@@ -239,6 +239,55 @@ Scale-to-zero means the first request after idle is a cold start.
 | `RESEND_API_KEY`, `EMAIL_FROM` | yes | OTP + transactional email over HTTPS |
 | `QSTASH_TOKEN`, `QSTASH_SIGNING_KEY`, `QSTASH_SIGNING_KEY_NEXT` | Vercel | QStash queue for background jobs |
 | `CONVERTAPI_SECRET`, `CLOUDCONVERT_API_KEY` | yes | 3rd-party conversion / compression APIs |
+| `PDF_SERVICES_CLIENT_ID`, `PDF_SERVICES_CLIENT_SECRET` | optional | Adobe PDF Services — high-fidelity PDF → DOCX (see below) |
+| `STORAGE_BACKEND=r2` + `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | optional | Cloudflare R2; required by the Adobe PDF → DOCX pipeline |
+
+### Adobe PDF → DOCX pipeline (`/api/pdf-to-docx/*`)
+
+A dedicated, high-fidelity PDF → DOCX path backed by the **Adobe PDF Services**
+Export API and **Cloudflare R2**. It is optional: set the two Adobe credentials
+(and `STORAGE_BACKEND=r2`) to enable it. When unset, the endpoints answer `501`
+and the converter falls back to the existing pipeline (`/v1/convert` →
+ConvertAPI/CloudConvert) and then to the in-browser structure-preserving
+builder, so behaviour is unchanged.
+
+```bash
+# 1. Reserve a job + presigned upload URL        (Authorization: Bearer <idToken>)
+POST /api/pdf-to-docx/init      { name, size, mimeType }  -> { jobId, uploadUrl, ... }
+# 2. Browser PUTs the PDF straight to R2 (the presigned URL is the credential).
+#    If the bucket has no CORS rule, POST the raw PDF to the same-origin fallback:
+#    POST /api/pdf-to-docx/upload?jobId=...   (body = PDF bytes, bodyParser off)
+# 3. Run the conversion (server-side, server-to-server with Adobe)
+POST /api/pdf-to-docx/start     { jobId }                 -> { job, completed }
+# 4. Poll; returns a short-lived presigned download URL when done
+GET  /api/pdf-to-docx/status?jobId=...                    -> { job, downloadUrl? }
+#    Fallback when the presigned GET is CORS-blocked:
+#    GET  /api/pdf-to-docx/download?jobId=...   -> DOCX bytes (attachment)
+```
+
+Job states: `uploading → processing → completed | failed`. Jobs, staged inputs
+(`pdf-docx/input/…`) and outputs (`pdf-docx/output/…`) live under R2 keys
+derived from an unguessable UUID and are owner-scoped; metadata is swept by the
+daily cron after `PDF_DOCX_JOB_TTL_MINUTES`. Uploads bypass the ~4.5MB function
+body cap (browser → R2 direct). Credentials never reach the browser.
+
+**R2 bucket configuration**
+
+- **CORS** must allow `PUT` (with `Content-Type: application/pdf`) and `GET` from
+  the SPA origin, e.g. `AllowedOrigins: ["https://<your-app>"]`,
+  `AllowedMethods: ["GET","PUT"]`, `AllowedHeaders: ["*"]`. Without it the browser
+  cannot use the presigned URLs and transparently falls back to the same-origin
+  `/api/pdf-to-docx/upload` and `/download` endpoints (subject to the serverless
+  request/response body cap, so configure CORS to support large files).
+- **Lifecycle rule** on prefixes `pdf-docx/input/` and `pdf-docx/output/`
+  (expire after `PDF_DOCX_JOB_TTL_MINUTES`) reaps staged objects from abandoned
+  uploads that never produced job metadata.
+
+**Verification status:** unit-tested with a mocked Adobe API and mocked R2, and
+verified live end-to-end (real Adobe PDF Services export + real R2 stage/download)
+with a real `PDF_SERVICES_*` credential: init → browser-direct R2 PUT → start →
+status → presigned DOCX download returned a valid OOXML package. Credentials are
+server-only and never shipped to the browser.
 
 ---
 

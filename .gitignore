@@ -71,6 +71,9 @@ poll_job.py
 backend/test-email-otp.js
 backend/test-smtp-direct.js
 tmp_css_log.txt
+# Personal sample documents used for manual conversion testing - never part of
+# the app or its deployment bundle.
+varun's docs/
 
 # ========================
 # Prompt History & AI

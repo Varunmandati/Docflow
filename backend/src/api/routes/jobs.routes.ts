@@ -6,19 +6,17 @@ import { ConversionResult } from '../../models/types.js';
 import { extractFirebaseUser, verifyFirebaseToken } from '../../middleware/firebase.middleware.js';
 import { env } from '../../config/env.js';
 
-// Ownership guard: a job is only accessible to its owner (or anonymous jobs
-// which are only reachable via their bearer session). Uses RLS-scoped lookup
-// so one user can never read another user's job status, result, or preview.
+// Ownership guard: a job is only accessible to its owner. Authenticated
+// callers are scoped by RLS to their own jobs; anonymous callers may only
+// reach user-less (anonymous) jobs by their random job id, so one user can
+// never read another user's job status, result, or preview.
 async function requireOwnedJob(app: FastifyInstance, request: FastifyRequest, reply: FastifyReply, jobId: string): Promise<boolean> {
     const user = await extractFirebaseUser(request);
     const userId = user?.uid || null;
 
-    if (!userId) {
-        reply.code(401).send({ message: 'Authentication required to access jobs.' });
-        return false;
-    }
-
-    const job = await jobService.getJob(jobId, userId);
+    const job = userId
+        ? await jobService.getJob(jobId, userId)
+        : await jobService.getJob(jobId);
     if (!job) {
         reply.code(404).send({ message: 'Job not found.' });
         return false;
@@ -66,7 +64,7 @@ export async function jobsRoutes(app: FastifyInstance) {
         }
     });
 
-    app.get('/v1/jobs/:jobId', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.get('/v1/jobs/:jobId', async (request, reply) => {
         const params = request.params as { jobId: string };
         const owned = await requireOwnedJob(app, request, reply, params.jobId);
         if (!owned) return reply;
@@ -92,7 +90,7 @@ export async function jobsRoutes(app: FastifyInstance) {
         };
     });
 
-    app.get('/v1/jobs/:jobId/result', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.get('/v1/jobs/:jobId/result', async (request, reply) => {
         const params = request.params as { jobId: string };
         const owned = await requireOwnedJob(app, request, reply, params.jobId);
         if (!owned) return reply;
@@ -117,7 +115,7 @@ export async function jobsRoutes(app: FastifyInstance) {
         return result;
     });
 
-    app.get('/v1/previews/:jobId', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.get('/v1/previews/:jobId', async (request, reply) => {
         const params = request.params as { jobId: string };
         const owned = await requireOwnedJob(app, request, reply, params.jobId);
         if (!owned) return reply;

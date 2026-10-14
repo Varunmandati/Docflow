@@ -107,6 +107,19 @@ const EnvSchema = z.object({
     CLOUDCONVERT_API_KEY: z.string().optional(),
     CLOUDCONVERT_BASE_URL: z.string().default('https://api.cloudconvert.com/v2'),
 
+    // --- Adobe PDF Services (high-fidelity PDF -> DOCX) ---------------------
+    // Optional dedicated engine, used by the /api/pdf-to-docx/* endpoints.
+    // When unset those endpoints answer 501 and the frontend falls back to the
+    // existing conversion pipeline (/v1/convert), so nothing breaks if a
+    // deployment never configures Adobe. Credentials are server-only and are
+    // never sent to the browser.
+    PDF_SERVICES_CLIENT_ID: z.string().optional(),
+    PDF_SERVICES_CLIENT_SECRET: z.string().optional(),
+    PDF_SERVICES_BASE_URL: z.string().default('https://pdf-services.adobe.io'),
+    // How long a finished PDF->DOCX job (input, output and metadata JSON) lives
+    // in R2 before the cleanup sweep removes it.
+    PDF_DOCX_JOB_TTL_MINUTES: z.coerce.number().int().positive().default(1440),
+
     // Shared secret Vercel Cron sends as `Authorization: Bearer <CRON_SECRET>`.
     CRON_SECRET: z.string().optional(),
 
@@ -240,6 +253,10 @@ export const env = {
     IS_R2_STORAGE: parsed.STORAGE_BACKEND === 'r2',
     IS_QSTASH_QUEUE: parsed.QUEUE_BACKEND === 'qstash',
     USE_REMOTE_ENGINE: parsed.CONVERTER_PROVIDER === 'remote',
+    // Adobe PDF Services needs BOTH halves of the credential; expose a single
+    // flag so the endpoints and the frontend can gate on it cheaply.
+    IS_ADOBE_PDF_CONFIGURED:
+        !!parsed.PDF_SERVICES_CLIENT_ID?.trim() && !!parsed.PDF_SERVICES_CLIENT_SECRET?.trim(),
     R2_ENDPOINT:
         parsed.R2_ENDPOINT ||
         (parsed.R2_ACCOUNT_ID ? `https://${parsed.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : ''),

@@ -176,6 +176,33 @@ export async function presignPut(key: string, contentType: string, expiresInSeco
     return getSignedUrl(c, cmd, { expiresIn: expiresInSeconds });
 }
 
+/**
+ * Presigned GET URL for handing a finished artifact back to the browser
+ * without proxying it through the API function (which would hit the ~4.5MB
+ * serverless response cap). The URL is short-lived and only minted for the
+ * owner of the job, so an artifact stays private by default.
+ */
+export async function presignGet(
+    key: string,
+    options: { expiresInSeconds?: number; downloadName?: string; contentType?: string } = {}
+): Promise<string> {
+    const { client: c, bucket } = s3();
+    const cmd = new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ResponseContentType: options.contentType || contentTypeFor(key),
+        ...(options.downloadName
+            ? {
+                  ResponseContentDisposition: `attachment; filename="${options.downloadName
+                      .replace(/[\r\n"]/g, '_')
+                      .replace(/\\/g, '/')
+                      .slice(0, 200)}"`,
+              }
+            : {}),
+    });
+    return getSignedUrl(c, cmd, { expiresIn: options.expiresInSeconds ?? 3600 });
+}
+
 // --- Upload metadata (PostgreSQL `uploads` table) --------------------------
 
 export interface UploadRow {

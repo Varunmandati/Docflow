@@ -10,7 +10,7 @@ import { CompressionJobData, ConversionJobData, BatchImageConversionJobData, Ima
 import { compressionQueue, conversionQueue } from '../../queue/queues.js';
 import { getUploadMetaForUser, resolveStoragePath, saveUpload } from '../../services/storage.service.js';
 import { validateFile, sanitizeFileName } from '../../services/file-validation.service.js';
-import { extractFirebaseUser, verifyFirebaseToken } from '../../middleware/firebase.middleware.js';
+import { extractFirebaseUser } from '../../middleware/firebase.middleware.js';
 import { jobService } from '../../services/job.service.js';
 import { auditService } from '../../services/audit.service.js';
 import { getUserProfile, updateUserProfile, ensureUserExists } from '../../services/profile.service.js';
@@ -25,12 +25,15 @@ const safeHeaderFilename = (name: string): string =>
 // Artifact paths live under {STORAGE_ROOT}/jobs/{jobId}/... — the first path
 // segment must be `jobs` and the second the jobId, so ownership can be proven
 // by looking up the job for the current user. Anything else is rejected.
+// Anonymous callers may only reach artifacts under user-less (anonymous) jobs;
+// authenticated callers are scoped by RLS to their own jobs.
 async function assertArtifactOwned(userId: string | null, relativePath: string): Promise<boolean> {
-    if (!userId) return false;
     const segments = relativePath.split('/');
     if (segments.length < 2 || segments[0] !== 'jobs') return false;
     const jobId = segments[1];
-    const job = await jobService.getJob(jobId, userId);
+    const job = userId
+        ? await jobService.getJob(jobId, userId)
+        : await jobService.getJob(jobId);
     return !!job;
 }
 
@@ -83,7 +86,7 @@ export async function filesRoutes(app: FastifyInstance) {
         }
     };
 
-    app.post('/v1/files/upload', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.post('/v1/files/upload', async (request, reply) => {
         const file = await request.file();
         if (!file) {
             return reply.code(400).send({ message: 'File is required.' });
@@ -153,7 +156,7 @@ export async function filesRoutes(app: FastifyInstance) {
             message: 'Direct-to-storage upload is not enabled on this deployment.',
         });
 
-    app.post('/v1/files/presign', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.post('/v1/files/presign', async (request, reply) => {
         if (!env.IS_R2_STORAGE) return directUploadDisabled(reply);
 
         const parsed = PresignSchema.safeParse(request.body);
@@ -199,7 +202,7 @@ export async function filesRoutes(app: FastifyInstance) {
         }
     });
 
-    app.post('/v1/files/:fileId/complete', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.post('/v1/files/:fileId/complete', async (request, reply) => {
         if (!env.IS_R2_STORAGE) return directUploadDisabled(reply);
 
         const { fileId } = request.params as { fileId: string };
@@ -260,7 +263,7 @@ export async function filesRoutes(app: FastifyInstance) {
         }
     });
 
-    app.post('/v1/convert', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.post('/v1/convert', async (request, reply) => {
         const parsed = ConvertSchema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({
@@ -343,7 +346,7 @@ export async function filesRoutes(app: FastifyInstance) {
         };
     });
 
-    app.post('/v1/compress', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.post('/v1/compress', async (request, reply) => {
         const parsed = CompressSchema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({
@@ -428,7 +431,7 @@ export async function filesRoutes(app: FastifyInstance) {
         };
     });
 
-    app.post('/v1/images/combine-to-pdf', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.post('/v1/images/combine-to-pdf', async (request, reply) => {
         const parsed = BatchImageConversionSchema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({
@@ -523,7 +526,7 @@ export async function filesRoutes(app: FastifyInstance) {
         };
     });
 
-    app.get('/v1/files/:fileId/download', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.get('/v1/files/:fileId/download', async (request, reply) => {
         const user = await extractFirebaseUser(request);
         const uid = user?.uid || null;
 
@@ -554,7 +557,7 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.send(stream);
     });
 
-    app.get('/v1/files/download', { preHandler: [verifyFirebaseToken] }, async (request, reply) => {
+    app.get('/v1/files/download', async (request, reply) => {
         const query = request.query as { path?: string };
         if (!query.path) {
             return reply.code(400).send({ message: 'Query parameter path is required.' });

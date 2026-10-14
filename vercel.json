@@ -8,12 +8,27 @@
       "maxDuration": 300,
       "memory": 2048,
       "includeFiles": "backend/node_modules/{strtok3,token-types,uint8array-extras,@tokenizer/inflate,@tokenizer/token,@borewit/text-codec,ieee754,debug}/**"
+    },
+    "api/pdf-to-docx/*.ts": {
+      "maxDuration": 300,
+      "memory": 2048
     }
   },
   "crons": [
     {
       "path": "/api/cron/cleanup",
       "schedule": "0 3 * * *"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/((?!assets/).*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0, must-revalidate"
+        }
+      ]
     }
   ],
   "rewrites": [
