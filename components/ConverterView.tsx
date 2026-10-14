@@ -1339,6 +1339,10 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             bold: boolean; italic: boolean; underline: boolean;
             fontFamily: string; color: string;
             hasEOL: boolean;
+            // Position in the PDF content stream. LaTeX/Word emit table rows in
+            // reading order (cell-major), so this order recovers a table row's
+            // cells even when their baselines differ.
+            ci: number;
         }
         const styles: Record<string, any> = textContent?.styles || {};
         const pw = pageWidth || 612;
@@ -1387,6 +1391,7 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 fontFamily,
                 color,
                 hasEOL: !!it.hasEOL,
+                ci: rawRuns.length,
             });
         }
         // Content-derived page margins (generic, not per-paper): the printable
@@ -1651,7 +1656,7 @@ const SLICES = 160;
     };
 
     const processColumnRunsEnhanced = (
-        rawRuns: { x: number; y: number; h: number; w: number; size: number; str: string; bold: boolean; italic: boolean; underline: boolean; fontFamily: string; color: string; hasEOL: boolean }[],
+        rawRuns: { x: number; y: number; h: number; w: number; size: number; str: string; bold: boolean; italic: boolean; underline: boolean; fontFamily: string; color: string; hasEOL: boolean; ci?: number }[],
         findUrl: (x: number, y: number, w: number, h: number) => string | undefined,
         colWidth: number,
         pageWidth: number,
@@ -1662,21 +1667,75 @@ const SLICES = 160;
         // Sort top-to-bottom (PDF y grows upward), then left-to-right
         rawRuns.sort((a, b) => (b.y - a.y) || (a.x - b.x));
 
-        // Group into visual lines by baseline proximity
-        const lines: { y: number; h: number; runs: typeof rawRuns[number][] }[] = [];
+        // Group into visual lines by baseline proximity, also fusing runs whose
+        // glyph boxes vertically overlap. In a table, cells are vertically
+        // centred, so a row's cells sit on slightly different baselines; the
+        // overlap merge keeps each row on one line, while ordinary adjacent
+        // text lines never overlap their boxes.
+        const lines: { y: number; h: number; top: number; bottom: number; size: number; row: boolean; reorder: boolean; runs: typeof rawRuns[number][] }[] = [];
         for (const r of rawRuns) {
             const last = lines[lines.length - 1];
-            if (last && Math.abs(last.y - r.y) <= Math.max(last.h, r.h) * 0.4) {
+            const rBottom = r.y - r.h;
+            const closeBaseline = !!last && Math.abs(last.y - r.y) <= Math.max(last.h, r.h) * 0.4;
+            // Fuse runs that sit on a DIFFERENT baseline yet still overlap
+            // vertically — that only happens for vertically-centred table cells.
+            // Comparable size guards against a large title over a small line.
+            const overlap = !!last && !closeBaseline && Math.abs(last.size - r.size) <= 2 &&
+                Math.min(last.top, r.y) - Math.max(last.bottom, rBottom) > Math.min(last.h, r.h) * 0.25;
+            if (last && (closeBaseline || overlap)) {
                 last.runs.push(r);
                 last.h = Math.max(last.h, r.h);
+                last.size = Math.max(last.size, r.size);
+                last.top = Math.max(last.top, r.y);
+                last.bottom = Math.min(last.bottom, rBottom);
+                if (overlap) { last.row = true; last.reorder = true; }
             } else {
-                lines.push({ y: r.y, h: r.h, runs: [r] });
+                lines.push({ y: r.y, h: r.h, top: r.y, bottom: rBottom, size: r.size, row: false, reorder: false, runs: [r] });
             }
         }
 
-        // Sort runs within each line left-to-right
+        // A single-baseline line can still be a table row (all cells sharing one
+        // baseline): it shows three or more wide, column-like gaps that ordinary
+        // flowing text (word spaces) never has. Flag such a line only when a
+        // nearby line shares two or more of its column positions — a real table
+        // has several rows aligned on the same columns, whereas a one-off
+        // scattered footer line or a code block does not.
+        const gridFlag = lines.map(line => {
+            const xr = [...line.runs].sort((a, b) => a.x - b.x);
+            let wide = 0;
+            for (let k = 1; k < xr.length; k++) {
+                const g = xr[k].x - (xr[k - 1].x + xr[k - 1].w);
+                const avgChar = (xr[k - 1].w / Math.max(xr[k - 1].str.length, 1) + xr[k].w / Math.max(xr[k].str.length, 1)) / 2;
+                if (g > Math.max(6, avgChar * 3)) wide++;
+            }
+            return wide >= 3;
+        });
+        const cols = lines.map(line => [...line.runs].map(r => r.x).sort((a, b) => a - b));
+        const shareCols = (a: number[], b: number[]) => {
+            let n = 0;
+            for (const x of a) if (b.some(y => Math.abs(y - x) <= 3)) n++;
+            return n;
+        };
+        for (let li = 0; li < lines.length; li++) {
+            if (!gridFlag[li]) continue;
+            const closeTo = (o: typeof lines[number] | undefined) =>
+                !!o && Math.abs(o.y - lines[li].y) < Math.max(o.h, lines[li].h) * 2.5;
+            let matched = false;
+            for (const j of [li - 1, li + 1, li - 2, li + 2]) {
+                if (j < 0 || j >= lines.length || !gridFlag[j] || !closeTo(lines[j])) continue;
+                if (shareCols(cols[li], cols[j]) >= 2) { matched = true; break; }
+            }
+            if (matched) lines[li].row = true;
+        }
+
+        // Order the runs within each line. A normal line reads left to right; a
+        // line fused from vertically-overlapping runs (a multi-baseline table row)
+        // must follow the PDF content order, which is cell-major for LaTeX/Word
+        // tables — sorting it by x would interleave the cells' wrapped lines
+        // (e.g. "Workload Calculation" -> "Calculation Workload").
         for (const line of lines) {
-            line.runs.sort((a, b) => a.x - b.x);
+            if (line.reorder) line.runs.sort((a, b) => (a.ci ?? 0) - (b.ci ?? 0));
+            else line.runs.sort((a, b) => a.x - b.x);
         }
 
         // Body size for heading classification. The caller passes the char-weighted
@@ -1703,6 +1762,7 @@ const SLICES = 160;
             xStart: number;
             xEnd: number;
             fullLineWidth: number;
+            row: boolean;
         }[] = [];
 
         for (const line of lines) {
@@ -1727,7 +1787,11 @@ const SLICES = 160;
                     const avgCharWidth = (prev.w / Math.max(prev.str.length, 1) + r.w / Math.max(r.str.length, 1)) / 2;
                     const prevEndsWithSpace = prev.str.endsWith(' ');
                     const nextStartsWithSpace = r.str.startsWith(' ');
-                    if (!prevEndsWithSpace && !nextStartsWithSpace && gap > avgCharWidth * 0.1) {
+                    // In a table row the runs follow content order, not x order,
+                    // so a cell that wrapped may jump left of the previous run
+                    // (negative gap). Always separate cells with one space.
+                    const needSpace = line.row || gap > avgCharWidth * 0.1;
+                    if (!prevEndsWithSpace && !nextStartsWithSpace && needSpace) {
                         const lastMerged = merged[merged.length - 1];
                         if (lastMerged) {
                             lastMerged.text += ' ';
@@ -1776,6 +1840,7 @@ const SLICES = 160;
                 xStart,
                 xEnd,
                 fullLineWidth: xEnd - xStart,
+                row: line.row,
             });
         }
 
@@ -1788,6 +1853,7 @@ const SLICES = 160;
         let prevLineY: number | null = null;
         let prevLineH = 0;
         let prevLineSize = bodySize;
+        let prevLineRow = false;
         let currentLineStartX = 0;
         let currentLineEndX = 0;
         let currentLineY = 0;
@@ -1940,7 +2006,12 @@ const SLICES = 160;
             const prevCentered = prevLineY !== null && paraInsetL > 3 && paraInsetR > 3 && Math.abs(paraInsetL - paraInsetR) <= (paraInsetL + paraInsetR) * 0.3;
             const alignmentChanged = isCentered !== prevCentered && prevLineY !== null;
 
-            const broke = largeGap || isHeading || prevWasHeading || startsList || (differentType && !isContinuation) || differentSize || alignmentChanged || blocks.length === 0;
+            // A table row (a line fused from vertically-overlapping cells) is
+            // always its own paragraph: rows advance far tighter than the
+            // column pitch, so without this they would merge into one blob.
+            const rowBoundary = lt.row || prevLineRow;
+
+            const broke = rowBoundary || largeGap || isHeading || prevWasHeading || startsList || (differentType && !isContinuation) || differentSize || alignmentChanged || blocks.length === 0;
             if (broke) {
                 flushParagraph();
                 // Space before this new paragraph = the real vertical gap minus
@@ -1981,6 +2052,7 @@ const SLICES = 160;
             prevLineY = y;
             prevLineH = h;
             prevLineSize = lineSize;
+            prevLineRow = lt.row;
         }
 
         flushParagraph();
