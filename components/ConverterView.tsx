@@ -1308,7 +1308,11 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
                 const rawName = String(font.name || '').replace(/^[A-Z]{6}\+/, '').trim();
                 const css = String(font.systemFontInfo?.css || '');
                 const cssFamily = css ? css.split(',')[0].replace(/["']/g, '').trim() : '';
-                const family = rawName && !/^g_d\d+_f\d+$/i.test(rawName) ? rawName : cssFamily;
+                // pdf.js reports unembedded/Type3 faces as "Type3"/"TrueType" or
+                // an internal g_dN_fM id — none is a real family, so prefer the
+                // systemFontInfo CSS family and otherwise leave it unresolved.
+                const isPlaceholder = !rawName || /^g_d\d+_f\d+$/i.test(rawName) || /^type\d$/i.test(rawName) || /^truetype$/i.test(rawName);
+                const family = isPlaceholder ? cssFamily : rawName;
                 if (family) result[id] = family;
                 pending.splice(i, 1);
             }
@@ -1968,7 +1972,9 @@ const SLICES = 160;
             for (let i = 0; i < s.length; i++) {
                 const c = s.charCodeAt(i);
                 if (c === 0x9 || c === 0xA || c === 0xD) { out += s[i]; continue; }
-                if (c < 0x20 || c === 0xFFFE || c === 0xFFFF) continue;
+                // Drop C0 controls, DEL/C1 controls (junk left behind by Type3
+                // fonts whose glyphs have no ToUnicode map) and non-characters.
+                if (c < 0x20 || (c >= 0x7F && c <= 0x9F) || c === 0xFFFE || c === 0xFFFF) continue;
                 if (c >= 0xD800 && c <= 0xDFFF) {
                     const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
                     if (c <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) { out += s[i] + s[i + 1]; i++; }
@@ -2043,7 +2049,7 @@ const SLICES = 160;
             if (block.type === 'spacer') {
                 return new Paragraph({ spacing: { before: 240 }, children: [] });
             }
-            const runs = block.runs.map(r => runToDocx(r));
+            const runs = block.runs.filter(r => sanitizeXmlText(r.text).length > 0).map(r => runToDocx(r));
             const opts: any = {
                 children: runs.length > 0 ? runs : [new TextRun({ text: '' })],
             };
@@ -2103,7 +2109,7 @@ const SLICES = 160;
                 return new Paragraph({ spacing: { before: 120 }, children: [] });
             }
             const forceHeadingBold = block.type === 'heading1' || block.type === 'heading2' || block.type === 'heading3';
-            const runs = block.runs.map(r => runToDocx(forceHeadingBold ? { ...r, bold: true } : r));
+            const runs = block.runs.filter(r => sanitizeXmlText(r.text).length > 0).map(r => runToDocx(forceHeadingBold ? { ...r, bold: true } : r));
             const cellSpacing: any = { after: block.spacing?.after ?? 0 };
             if (block.spacing?.line) {
                 cellSpacing.line = block.spacing.line;
