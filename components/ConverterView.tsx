@@ -1742,6 +1742,14 @@ const SLICES = 160;
                 }
             }
 
+            // A leading Type3 "bullet" glyph arrives from pdf.js as a lone C1
+            // control char (e.g. U+0088). Restore it to a real bullet so the list
+            // item keeps its marker instead of silently dropping it.
+            const leadChar = merged[0]?.text?.[0];
+            if (leadChar && leadChar >= '\u0080' && leadChar <= '\u009F') {
+                merged[0].text = '\u2022' + merged[0].text.slice(1);
+            }
+
             const fullText = merged.map(r => r.text).join('');
             const xStart = line.runs[0]?.x || 0;
             const xEnd = line.runs[line.runs.length - 1]?.x + (line.runs[line.runs.length - 1]?.w || 0) || 0;
@@ -1769,7 +1777,6 @@ const SLICES = 160;
         let prevLineY: number | null = null;
         let prevLineH = 0;
         let prevLineSize = bodySize;
-        let prevLineFont = bodyFont;
         let currentLineStartX = 0;
         let currentLineEndX = 0;
         let currentLineY = 0;
@@ -1840,34 +1847,39 @@ const SLICES = 160;
             }
         };
 
-        // Column's natural line pitch (median baseline delta): paragraph breaks
-        // are decided against it rather than font-metric estimates, so adjacent
-        // same-style paragraphs no longer merge into one sequential blob.
-        const pitches: number[] = [];
-        for (let i = 1; i < lineTexts.length; i++) pitches.push(lineTexts[i - 1].y - lineTexts[i].y);
-        pitches.sort((a, b) => a - b);
-        const linePitch = pitches.length ? pitches[Math.floor(pitches.length / 2)] : bodySize * 1.2;
-        const paraBreakGap = Math.max(linePitch * 1.45, bodySize * 1.25);
-        // Tight within-paragraph line advance (single-spacing height): the raw
-        // median `linePitch` above includes inter-paragraph gaps and is used for
-        // break detection, but exact line spacing must use the tight advance or
-        // pages inflate. Estimate it as the MEDIAN of deltas that are clearly
-        // same-paragraph (at or under the paragraph-break threshold) inside a
-        // WIDE band. A mode over the whole band is skewed upward by heading
-        // lines and paragraph gaps (IEEE 10pt body leads ~16.5pt while heading
-        // lines hit ~17.5pt), and a narrow [0.9,1.6]x band wrongly excludes the
-        // real leading and snaps to a spurious tighter value — either makes
-        // line height inconsistent across columns and inflates dense pages.
-        const inBand = pitches.filter(d => d >= bodySize * 0.7 && d <= bodySize * 2.5);
-        const withinPara = inBand.filter(d => d <= paraBreakGap * 0.999);
-        const hBand = withinPara.length >= 4 ? withinPara : inBand;
-        let lineHeight: number;
-        if (hBand.length) {
-            hBand.sort((a, b) => a - b);
-            lineHeight = hBand[Math.floor(hBand.length / 2)];
-        } else {
-            lineHeight = bodySize * 1.15;
+        // Tight within-paragraph line advance (leading). Compute it from gaps
+        // that can only be wrapped-line advances: skip any gap that lands on a
+        // heading or starts a list item (those are section/entry boundaries, not
+        // leading), then take the median. A whole-column median is skewed — a
+        // resume is mostly short entries and tightly packed lists, so its median
+        // lands on a paragraph/list gap and either merges everything into one
+        // blob or (at the tight list pitch) splits every plain paragraph line by
+        // line. Skipping boundary gaps pins the estimate on the wrapped-line
+        // advance whatever the mix of body, headings, and lists.
+        const isHeadingSize = (s: number) => s > bodySize * 1.1;
+        const listMarker = (t: string) => {
+            const m = t.match(/\S/);
+            const c = m ? m[0] : '';
+            // Real bullets, plus the Type3 bullet glyph pdf.js exposes as a lone
+            // C1 control char (e.g. U+0088) — that is how these resumes mark
+            // list items, and it must still start a new paragraph.
+            return /[•●◦▪‣·*]/.test(c) || (c >= '\u0080' && c <= '\u009F');
+        };
+        const leadGaps: number[] = [];
+        for (let i = 1; i < lineTexts.length; i++) {
+            const gap = lineTexts[i - 1].y - lineTexts[i].y;
+            if (gap <= 0) continue;
+            if (gap < bodySize * 0.7 || gap > bodySize * 2.5) continue;
+            if (isHeadingSize(lineTexts[i].lineSize) || isHeadingSize(lineTexts[i - 1].lineSize)) continue;
+            if (listMarker(lineTexts[i].text)) continue;
+            leadGaps.push(gap);
         }
+        leadGaps.sort((a, b) => a - b);
+        let lineHeight = leadGaps.length ? leadGaps[Math.floor(leadGaps.length / 2)] : bodySize * 1.15;
+        lineHeight = Math.min(Math.max(lineHeight, bodySize * 0.95), bodySize * 1.7);
+
+        // A paragraph break is a gap meaningfully larger than one line advance.
+        const paraBreakGap = Math.max(lineHeight * 1.12, lineHeight + 1.2, bodySize * 1.05);
         // Inter-paragraph gap (beyond one line advance) stashed for the block
         // that is about to start; applied as `spacing.before` when it flushes.
         let pendingBeforeTwips = 0;
@@ -1879,16 +1891,23 @@ const SLICES = 160;
             if (lineSize > bodySize * 1.5) thisType = 'heading1';
             else if (lineSize > bodySize * 1.25) thisType = 'heading2';
             else if (lineSize > bodySize * 1.1) thisType = 'heading3';
-            if (/^\s*[•●◦▪‣·*]\s/.test(text)) thisType = 'list';
+            const startsList = listMarker(text);
+            if (startsList) thisType = 'list';
 
-            // Paragraph break conditions
+            // Paragraph break conditions. A wrapped continuation line carries no
+            // bullet, so it "changes type" from the list item it belongs to — but
+            // it is set with a hanging indent (starts right of the column edge),
+            // unlike a brand-new entry title which is flush left. Suppress the
+            // type-change break for those indented continuations only; a flush-left
+            // line after a list still starts a new entry.
             const gap = prevLineY === null ? 0 : prevLineY - y;
             const largeGap = gap > paraBreakGap;
             const differentType = thisType !== currentType;
-            const isHeading = thisType !== 'body';
-            const prevWasHeading = currentType !== 'body';
-            const differentFont = lineFont !== prevLineFont && prevLineFont !== '';
+            const isHeading = thisType === 'heading1' || thisType === 'heading2' || thisType === 'heading3';
+            const prevWasHeading = currentType === 'heading1' || currentType === 'heading2' || currentType === 'heading3';
             const differentSize = Math.abs(lineSize - prevLineSize) > 1.5;
+            const indented = (lt.xStart - regionLeft) > 3;
+            const isContinuation = indented && gap <= paraBreakGap;
 
             // Check if text is centred — measured against the REGION (the column's
             // own bounds), not the page centre, and only when the line is inset
@@ -1903,7 +1922,7 @@ const SLICES = 160;
             const prevCentered = prevLineY !== null && paraInsetL > 3 && paraInsetR > 3 && Math.abs(paraInsetL - paraInsetR) <= (paraInsetL + paraInsetR) * 0.3;
             const alignmentChanged = isCentered !== prevCentered && prevLineY !== null;
 
-            const broke = largeGap || differentType || isHeading || prevWasHeading || differentFont || differentSize || alignmentChanged || blocks.length === 0;
+            const broke = largeGap || isHeading || prevWasHeading || startsList || (differentType && !isContinuation) || differentSize || alignmentChanged || blocks.length === 0;
             if (broke) {
                 flushParagraph();
                 // Space before this new paragraph = the real vertical gap minus
@@ -1944,7 +1963,6 @@ const SLICES = 160;
             prevLineY = y;
             prevLineH = h;
             prevLineSize = lineSize;
-            prevLineFont = lineFont;
         }
 
         flushParagraph();
