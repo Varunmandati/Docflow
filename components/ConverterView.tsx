@@ -462,16 +462,27 @@ const ConverterView: React.FC<ConverterViewProps> = ({ initialFiles, onConversio
             outputFormat: globalOutputFormat, // Default to current global selection
         }));
 
-        // Dedupe against the live list (ref) so we don't re-process files that
-        // are already present — setState updaters may run after this loop.
-        const existingIds = new Set(filesRef.current.map(f => f.id));
-        const filesToProcess = newAppFiles.filter(f => !existingIds.has(f.id));
+        // De-duplicate only within this batch (selecting the same file twice in
+        // one drop). When a file that is ALREADY listed is uploaded again, drop
+        // the existing entry so it is reprocessed from scratch — re-uploading
+        // must always re-run the conversion instead of silently reusing the
+        // previously extracted blocks (which made re-uploads look "cached").
+        const seenIds = new Set<string>();
+        const filesToProcess = newAppFiles.filter(f => {
+            if (seenIds.has(f.id)) return false;
+            seenIds.add(f.id);
+            return true;
+        });
         if (filesToProcess.length > 0) {
-            filesRef.current = [...filesRef.current, ...filesToProcess];
-            setFiles(prev => {
-                const ids = new Set(prev.map(f => f.id));
-                return [...prev, ...filesToProcess.filter(f => !ids.has(f.id))];
-            });
+            const incomingIds = new Set(filesToProcess.map(f => f.id));
+            filesRef.current = [
+                ...filesRef.current.filter(f => !incomingIds.has(f.id)),
+                ...filesToProcess,
+            ];
+            setFiles(prev => [
+                ...prev.filter(f => !incomingIds.has(f.id)),
+                ...filesToProcess,
+            ]);
         }
 
         for (const appFile of filesToProcess) {
@@ -1872,6 +1883,13 @@ const SLICES = 160;
             if (gap < bodySize * 0.7 || gap > bodySize * 2.5) continue;
             if (isHeadingSize(lineTexts[i].lineSize) || isHeadingSize(lineTexts[i - 1].lineSize)) continue;
             if (listMarker(lineTexts[i].text)) continue;
+            // Only body-sized lines define the wrapped-line advance. A smaller
+            // run sharing the column (e.g. a 9pt abstract inside a 10pt body)
+            // advances at its own tighter leading; including it dragged the
+            // whole column's estimate down and split every body line into its
+            // own paragraph. Larger lines are handled by isHeadingSize above.
+            if (Math.abs(lineTexts[i].lineSize - bodySize) > 0.75) continue;
+            if (Math.abs(lineTexts[i - 1].lineSize - bodySize) > 0.75) continue;
             leadGaps.push(gap);
         }
         leadGaps.sort((a, b) => a - b);
